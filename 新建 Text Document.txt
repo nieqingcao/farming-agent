@@ -1,0 +1,105 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Farming Data Optimization Agent",
+    "description": "Farming KPIs prediction and rule-based advice. CN/EN supported.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    { "url": "https://ectozoic-shiloh-lauraceous.ngrok-free.dev" }
+  ],
+  "paths": {
+    "/": {
+      "get": { "summary": "Root", "operationId": "root", "responses": { "200": { "description": "OK" } } }
+    },
+    "/health": {
+      "get": { "summary": "Health Check", "operationId": "healthCheck", "responses": { "200": { "description": "OK" } } }
+    },
+    "/predictQuick": {
+      "get": {
+        "summary": "Predict (GET; tolerant string query)",
+        "operationId": "predictQuick_get",
+        "parameters": [
+          { "name": "temperature", "in": "query", "required": false, "schema": { "type": "string" } },
+          { "name": "humidity",    "in": "query", "required": false, "schema": { "type": "string" } },
+          { "name": "co2",         "in": "query", "required": false, "schema": { "type": "string" } },
+          { "name": "feed",        "in": "query", "required": false, "schema": { "type": "string" } },
+          { "name": "age_week",    "in": "query", "required": false, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "post": {
+        "summary": "Predict (POST; body optional, query overrides body; tolerant string fields)",
+        "operationId": "predictQuick_post",
+        "parameters": [
+          { "name": "temperature", "in": "query", "required": false, "schema": { "type": "string" } },
+          { "name": "humidity",    "in": "query", "required": false, "schema": { "type": "string" } },
+          { "name": "co2",         "in": "query", "required": false, "schema": { "type": "string" } },
+          { "name": "feed",        "in": "query", "required": false, "schema": { "type": "string" } },
+          { "name": "age_week",    "in": "query", "required": false, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "temperature": { "type": "string" },
+                  "humidity":    { "type": "string" },
+                  "co2":         { "type": "string" },
+                  "feed":        { "type": "string" },
+                  "age_week":    { "type": "string" }
+                }
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "temperature": { "type": "string" },
+                  "humidity":    { "type": "string" },
+                  "co2":         { "type": "string" },
+                  "feed":        { "type": "string" },
+                  "age_week":    { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "OK" }
+        }
+      }
+    },
+    "/askQuick": {
+      "get": {
+        "summary": "QA (GET; tolerant string query)",
+        "operationId": "askQuick_get",
+        "parameters": [
+          { "name": "q", "in": "query", "required": false, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      },
+      "post": {
+        "summary": "QA (POST; body optional, query overrides body; tolerant string)",
+        "operationId": "askQuick_post",
+        "parameters": [
+          { "name": "q", "in": "query", "required": false, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json":   { "schema": { "type": "object", "properties": { "q": { "type": "string" } } } },
+            "application/x-www-form-urlencoded": { "schema": { "type": "object", "properties": { "q": { "type": "string" } } } }
+          }
+        },
+        "responses": { "200": { "description": "OK" } }
+      }
+    }
+  }
+}
