@@ -1,0 +1,23 @@
+{
+  "version": "v1.0",
+  "items": [
+    {
+      "factor": "temperature",
+      "range": { "preferred_min": 18, "preferred_max": 25, "unit": "°C" },
+      "template": "温度偏{dir}（{measured}{unit}，宜 {preferred_min}-{preferred_max}{unit}），建议{action}，目标{target}{unit}",
+      "action": "通风/降温"
+    },
+    {
+      "factor": "humidity",
+      "range": { "preferred_min": 50, "preferred_max": 60, "unit": "%" },
+      "template": "湿度偏{dir}（{measured}{unit}，宜 {preferred_min}-{preferred_max}{unit}），建议{action}，目标{target}{unit}",
+      "action": "除湿/加湿"
+    },
+    {
+      "factor": "co2",
+      "range": { "preferred_max": 1200, "unit": "ppm" },
+      "template": "CO₂偏{dir}（{measured}{unit}，宜 ≤{preferred_max}{unit}），建议{action}，目标≤{target}{unit}",
+      "action": "加强通风"
+    }
+  ]
+}
