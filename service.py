@@ -323,6 +323,11 @@ def _predict_pair(row: Dict[str, float], model_payload: Dict[str, Any]) -> Tuple
 # Advice / anomalies helpers
 # -----------------------------
 def _build_hits_and_text(env: Dict[str, float], rules: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str]:
+    class _SafeDict(dict):
+        def __missing__(self, key):
+            # 未提供的占位符按原样保留，避免 KeyError
+            return "{" + key + "}"
+
     hits = []
     for it in rules.get("items", []):
         f = it.get("factor"); rg = it.get("range", {})
@@ -331,22 +336,32 @@ def _build_hits_and_text(env: Dict[str, float], rules: Dict[str, Any]) -> Tuple[
             continue
         v = float(env[f])
         pmin = rg.get("preferred_min"); pmax = rg.get("preferred_max")
+
         status = None; target = None
         if pmax is not None and v > pmax:
             status = "偏高"; target = pmax
         elif pmin is not None and v < pmin:
             status = "偏低"; target = pmin
+
         if status:
             tpl = it.get("template", "{factor}{status} -> {action}")
-            text = tpl.format(
+            ctx = _SafeDict(
                 status=status, measured=v, unit=unit, pmin=pmin, pmax=pmax,
                 action=it.get("action","调整"), target=target, factor=f
             )
+            # 安全格式化（不会因未知占位符报错）
+            try:
+                text = tpl.format_map(ctx)
+            except Exception:
+                # double-safe fallback
+                text = f"{f}{status}（{v}{unit}，宜 {pmin}–{pmax}{unit}），建议{it.get('action','调整')}，目标 {target}{unit}"
             hits.append({
                 "factor": f, "measured": v, "range": rg, "recommendation": text
             })
+
     advice_text = "；".join([h["recommendation"] for h in hits]) if hits else "各参数均在适宜范围内，维持当前措施。"
     return hits, advice_text
+
 
 def _generated_if_else(env: Dict[str, float], slopes: Dict[str, Dict[str, float]], rules: Dict[str, Any]) -> List[str]:
     ret = []
