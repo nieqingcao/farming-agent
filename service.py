@@ -24,6 +24,43 @@ from sklearn.tree import DecisionTreeRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, r2_score
 
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any
+
+# ======================
+# Pydantic Response Models
+# ======================
+
+class HitItem(BaseModel):
+    factor: str = Field(..., description="受影响的因素，如温度、湿度等")
+    measured: float = Field(..., description="测量值")
+    range: Dict[str, Any] = Field(..., description="该因素的适宜范围")
+    recommendation: str = Field(..., description="针对该因素的具体建议")
+
+class AdviceBlock(BaseModel):
+    advice: str = Field(..., description="总体建议摘要")
+    hits: List[HitItem] = Field(default_factory=list, description="命中的具体影响因素列表")
+    rules_version: str = Field(..., description="规则集版本号")
+
+class PredictionBlock(BaseModel):
+    survival_rate: float = Field(..., description="预测成活率 (%)")
+    daily_gain: float = Field(..., description="预测日增重 (g/day)")
+    model_version: str = Field(..., description="当前模型版本号")
+    trace_id: str = Field(..., description="请求追踪 ID")
+
+class PredictStdResp(BaseModel):
+    prediction: PredictionBlock
+    advice: AdviceBlock
+
+class PredictQuickResp(BaseModel):
+    survival_rate: float = Field(..., description="预测成活率 (%)")
+    daily_gain: float = Field(..., description="预测日增重 (g/day)")
+    advice: str = Field(..., description="简要建议")
+
+class AskResp(BaseModel):
+    answer: str = Field(..., description="自然语言回答")
+
+
 # -------------------------
 # App & paths
 # -------------------------
@@ -297,7 +334,7 @@ def put_rules(rules: Dict[str, Any]):
 # -------------------------
 # Endpoint: predict (standard JSON)
 # -------------------------
-@app.post("/predict")
+@app.post("/predict", response_model=PredictStdResp)
 def predict(env: EnvReading):
     """
     标准预测：输入环境读数，输出成活率/日增重预测与建议（带命中规则）。
@@ -387,7 +424,7 @@ def ask(
 # -------------------------
 # Quick endpoints (query-friendly for test panels)
 # -------------------------
-@app.post("/predictQuick")
+@app.post("/predictQuick", response_model=PredictQuickResp)
 def predict_quick(
     temperature: float = Query(..., description="°C"),
     humidity: float = Query(..., description="%"),
@@ -413,7 +450,7 @@ def predict_quick(
         "advice": a["advice"],
     }
 
-@app.post("/askQuick")
+@app.post("/askQuick", response_model=AskResp)
 def ask_quick(
     q: str = Query(..., description="固定问句字符串"),
     temperature: Optional[float] = Query(None),
