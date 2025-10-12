@@ -370,6 +370,40 @@ async def ask_ultra(
     # 走你已有的预测逻辑
     return predict(EnvReading(**{k: float(data[k]) for k in need}))
 
+# 可选：添加到 service.py
+from fastapi import Body
+import re, json
+
+@app.post("/predictBridge")
+def predict_bridge(query: str = Body(..., embed=True)):
+    """
+    接受 {"query":"temperature=28, humidity=65, co2=1300, feed=1.2, age_week=4"}
+    或 {"query":"{\"temperature\":28,\"humidity\":65,...}"}
+    两种格式；自动解析后转调 /predict 同款逻辑
+    """
+    s = query.strip()
+    try:
+        # 情况1：本身就是 JSON
+        if s.startswith("{"):
+            payload = json.loads(s)
+        else:
+            # 情况2：key=val, key=val 形式
+            kv = dict(re.findall(r'(\w+)\s*=\s*([-\d\.]+)', s))
+            payload = {
+                "temperature": float(kv["temperature"]),
+                "humidity": float(kv["humidity"]),
+                "co2": float(kv["co2"]),
+                "feed": float(kv["feed"]),
+                "age_week": float(kv["age_week"])
+            }
+    except Exception:
+        return {"error": "parse_failed", "hint": "请传 JSON 对象或 key=value 形式"}
+
+    # 复用原 predict 逻辑
+    env = EnvReading(**payload)
+    return predict(env)
+
+
 
 # -----------------------------
 # Pydantic Schemas
