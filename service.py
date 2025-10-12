@@ -173,6 +173,96 @@ async def _validation_error_to_json(request: Request, exc: RequestValidationErro
         }
     )
 
+# --- 置顶导入（若已有可跳过） ---
+import json, re
+from typing import Optional, Any, Dict
+from fastapi import Request, Query, Body
+
+def _parse_any_text(s: str) -> Dict[str, float]:
+    # 1) 先试 JSON（既支持 {five fields} 也支持 {"q": "..."}）
+    try:
+        obj = json.loads(s)
+        if isinstance(obj, dict):
+            # 如果是 {"q": "..."} / {"query": "..."} / {"text": "..."}
+            for k in ["q", "query", "text"]:
+                if k in obj and isinstance(obj[k], str):
+                    s = obj[k]
+                    break
+            else:
+                return {k.lower(): float(obj[k]) for k in obj if isinstance(obj[k], (int, float, str))}
+    except Exception:
+        pass
+    # 2) k=v、中文逗号/分号/换行分隔
+    data: Dict[str, float] = {}
+    for p in re.split(r"[,\n，；;]+", s):
+        m = re.match(r"\s*([A-Za-z_一-龥]+)\s*[:=]\s*([\-+0-9\.]+)\s*$", p)
+        if m:
+            try:
+                data[m.group(1).lower()] = float(m.group(2))
+            except Exception:
+                pass
+    # 别名映射
+    alias = {
+        "temperature": ["temp","t","温度"],
+        "humidity": ["hum","h","湿度"],
+        "co2": ["co₂","二氧化碳","二氧"],
+        "feed": ["feeding","饲喂","饲料","投喂"],
+        "age_week": ["age","week","agew","周龄"]
+    }
+    out: Dict[str, float] = {}
+    for k, als in alias.items():
+        if k in data:
+            out[k] = data[k]; continue
+        for a in als:
+            if a in data:
+                out[k] = data[a]; break
+    return out
+
+# ✅ 超兼容入口：无参数要求；Body 可是文本/JSON；Query 也能用
+@app.post("/askUltra")
+async def ask_ultra(
+    request: Request,
+    q: Optional[str] = Query(None),
+    query: Optional[str] = Query(None),
+    text: Optional[str] = Query(None),
+    body_any: Any = Body(None)
+):
+    # 1) 优先从 query 别名取
+    raw = q or query or text
+
+    # 2) 再尝试从 JSON body 取
+    if raw is None and isinstance(body_any, dict):
+        raw = body_any.get("q") or body_any.get("query") or body_any.get("text")
+        if raw is None:
+            # 直接就是五个字段的 JSON
+            need = ["temperature","humidity","co2","feed","age_week"]
+            lower = {k.lower(): body_any[k] for k in body_any}
+            if all(k in lower for k in need):
+                return predict(EnvReading(**{k: float(lower[k]) for k in need}))
+
+    # 3) 最后读取纯文本 body
+    if raw is None:
+        try:
+            b = await request.body()
+            if b:
+                raw = b.decode("utf-8", "ignore")
+        except Exception:
+            raw = ""
+
+    raw = (raw or "").strip()
+    data = _parse_any_text(raw)
+    need = ["temperature","humidity","co2","feed","age_week"]
+    miss = [k for k in need if k not in data]
+    if miss:
+        return {
+            "error": f"missing fields: {', '.join(miss)}",
+            "hint": "temperature=28, humidity=65, co2=1300, feed=1.2, age_week=4  或等价 JSON"
+        }
+
+    return predict(EnvReading(**{k: float(data[k]) for k in need}))
+
+
+
 # -----------------------------
 # Pydantic Schemas
 # -----------------------------
