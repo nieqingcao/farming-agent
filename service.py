@@ -953,25 +953,109 @@ def ask(body: AskBody):
         prov = {"from_rules": full["advice"]["hits"], "from_importance": full["explain"]["global_importance_percent"]}
     return {"answer": ans, "provenance": prov}
 
-# 快问（POST）
+# # 快问（POST）
+# @app.post("/askQuick")
+# def ask_quick(
+#     q: str = Query(..., description="固定句式问题"),
+#     temperature: Optional[float] = Query(None),
+#     humidity: Optional[float] = Query(None),
+#     co2: Optional[float] = Query(None),
+#     feed: Optional[float] = Query(None),
+#     age_week: Optional[int] = Query(None),
+# ):
+#     if temperature is not None and humidity is not None and co2 is not None:
+#         env = EnvReading(
+#             temperature=temperature, humidity=humidity, co2=co2,
+#             feed=feed if feed is not None else 1.0,
+#             age_week=age_week if age_week is not None else 4
+#         )
+#         full = predict(env)
+#         return {"answer": full["advice"]["advice"], "provenance": {"from_rules": full["advice"]["hits"]}}
+#     return {"answer": ASK_ENUM.get(q, "暂不支持该固定句式。"), "provenance": {}}
+
+# ---- 顶部如果没有这些导入，请加上 ----
+import json, re
+from typing import Optional, Any, Dict
+from fastapi import Query, Request, Body
+
+def _parse_any_text(s: str) -> Dict[str, float]:
+    # 1) JSON 对象字符串
+    try:
+        obj = json.loads(s)
+        if isinstance(obj, dict):
+            data = {k.lower(): obj[k] for k in obj}
+        else:
+            data = {}
+    except Exception:
+        data = {}
+    # 2) k=v / 中文分隔兜底
+    if not data:
+        parts = re.split(r"[,\n，；;]+", s)
+        for p in parts:
+            m = re.match(r"\s*([A-Za-z_一-龥]+)\s*[:=]\s*([\-+0-9\.]+)\s*$", p)
+            if m:
+                data[m.group(1).lower()] = float(m.group(2))
+    # 别名
+    alias = {
+        "temperature": ["temp","t","温度"],
+        "humidity": ["hum","h","湿度"],
+        "co2": ["co₂","二氧化碳","二氧"],
+        "feed": ["feeding","饲喂","饲料","投喂"],
+        "age_week": ["age","week","agew","周龄"]
+    }
+    out: Dict[str, float] = {}
+    for k, als in alias.items():
+        if k in data: out[k] = float(data[k]); continue
+        for a in als:
+            if a in data: out[k] = float(data[a]); break
+    return out
+
+# 兼容：POST body 任意格式 / JSON 对象 / {"q": "..."} / {"query": "..."} / {"text": "..."}
 @app.post("/askQuick")
-def ask_quick(
-    q: str = Query(..., description="固定句式问题"),
-    temperature: Optional[float] = Query(None),
-    humidity: Optional[float] = Query(None),
-    co2: Optional[float] = Query(None),
-    feed: Optional[float] = Query(None),
-    age_week: Optional[int] = Query(None),
+async def ask_quick_post(
+    request: Request,
+    q: Optional[str] = Query(None),
+    query: Optional[str] = Query(None),
+    text: Optional[str] = Query(None),
+    body_any: Any = Body(None)
 ):
-    if temperature is not None and humidity is not None and co2 is not None:
-        env = EnvReading(
-            temperature=temperature, humidity=humidity, co2=co2,
-            feed=feed if feed is not None else 1.0,
-            age_week=age_week if age_week is not None else 4
-        )
-        full = predict(env)
-        return {"answer": full["advice"]["advice"], "provenance": {"from_rules": full["advice"]["hits"]}}
-    return {"answer": ASK_ENUM.get(q, "暂不支持该固定句式。"), "provenance": {}}
+    raw = q or query or text
+
+    # 从 body 抓文本或对象
+    if raw is None:
+        try:
+            if isinstance(body_any, (dict, list)):
+                if isinstance(body_any, dict):
+                    # 如果是 {"q": "..."} / {"query": "..."} / {"text": "..."} / 或直接五个字段
+                    raw = body_any.get("q") or body_any.get("query") or body_any.get("text")
+                    if raw is None:
+                        # 可能直接就是五个字段
+                        data = {k.lower(): body_any[k] for k in body_any}
+                        need = ["temperature","humidity","co2","feed","age_week"]
+                        if all(k in data for k in need):
+                            from pydantic import BaseModel
+                            return predict(EnvReading(**{k: float(data[k]) for k in need}))
+                else:
+                    raw = None
+            if raw is None:
+                # 纯文本 body
+                b = await request.body()
+                if b:
+                    raw = b.decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+
+    raw = (raw or "").strip()
+    data = _parse_any_text(raw)
+    need = ["temperature","humidity","co2","feed","age_week"]
+    missing = [k for k in need if k not in data]
+    if missing:
+        return {
+            "error": f"missing fields: {', '.join(missing)}",
+            "hint": "temperature=28, humidity=65, co2=1300, feed=1.2, age_week=4 OR JSON with these keys"
+        }
+    return predict(EnvReading(**{k: float(data[k]) for k in need}))
+
 
 # # 快问（GET 别名）
 # @app.get("/askQuick")
