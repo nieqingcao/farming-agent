@@ -659,6 +659,14 @@ def predict_quick(
     feed: Optional[float] = Query(1.0, description="饲喂量 kg/天"),
     age_week: Optional[int] = Query(4, description="周龄(周)")
 ):
+        # ✅ 如果 FastAPI 没解析到参数（经 307 可能失效），手动补救
+    if temperature is None or humidity is None or co2 is None:
+        params = dict(request.query_params)
+        temperature = float(params.get("temperature", 0) or 0)
+        humidity = float(params.get("humidity", 0) or 0)
+        co2 = float(params.get("co2", 0) or 0)
+        feed = float(params.get("feed", 1.0) or 1.0)
+        age_week = int(params.get("age_week", 4) or 4)
     env = EnvReading(temperature=temperature, humidity=humidity, co2=co2, feed=feed, age_week=age_week)
     full = predict(env)
     pred = full["prediction"]
