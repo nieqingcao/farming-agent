@@ -342,10 +342,15 @@ def _build_hits_and_text(env: Dict[str, float], rules: Dict[str, Any]) -> Tuple[
 
         status = None
         target = None
+        dir_txt = ""     # “高/低”
+        arrow = ""       # “↑/↓”
+
         if pmax is not None and v > pmax:
             status = "偏高"; target = pmax
+            dir_txt = "高"; arrow = "↑"
         elif pmin is not None and v < pmin:
             status = "偏低"; target = pmin
+            dir_txt = "低"; arrow = "↓"
 
         if status:
             tpl = it.get("template", "{factor}{status} -> {action}")
@@ -358,7 +363,9 @@ def _build_hits_and_text(env: Dict[str, float], rules: Dict[str, Any]) -> Tuple[
                 preferred_min=pmin, preferred_max=pmax,
                 action=it.get("action", "调整"),
                 target=target,
-                factor=f
+                factor=f,
+                dir=dir_txt,          # 关键：填充 {dir}
+                arrow=arrow           # 额外：可在模板中用 {arrow}
             )
             try:
                 text = tpl.format_map(ctx)
@@ -375,6 +382,7 @@ def _build_hits_and_text(env: Dict[str, float], rules: Dict[str, Any]) -> Tuple[
 
     advice_text = "；".join([h["recommendation"] for h in hits]) if hits else "各参数均在适宜范围内，维持当前措施。"
     return hits, advice_text
+
 
 
 def _generated_if_else(env: Dict[str, float], slopes: Dict[str, Dict[str, float]], rules: Dict[str, Any]) -> List[str]:
