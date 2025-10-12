@@ -90,6 +90,60 @@ def oai_ping_head():
 def healthz():
     return {"ok": True}
 
+
+from fastapi import Request
+from fastapi.responses import RedirectResponse
+
+# ✅ 平台安全代理：空调用 => 200；有参数 => 307 转到真实端点
+@app.api_route("/oai/predictQuick", methods=["GET", "POST", "OPTIONS", "HEAD"], tags=["meta"])
+async def oai_predict_proxy(request: Request,
+                            temperature: float | None = None,
+                            humidity: float | None = None,
+                            co2: float | None = None,
+                            feed: float | None = None,
+                            age_week: int | None = None):
+    # 平台保存时的“空探测”——直接 200
+    if temperature is None or humidity is None or co2 is None:
+        return {
+            "ok": True,
+            "probe": "predictQuick",
+            "usage": "POST/GET with query: temperature, humidity, co2, [feed], [age_week]"
+        }
+    # 用户/评委带参调用——重定向到你原有真实端点
+    qs = []
+    qs.append(f"temperature={temperature}")
+    qs.append(f"humidity={humidity}")
+    qs.append(f"co2={co2}")
+    if feed is not None: qs.append(f"feed={feed}")
+    if age_week is not None: qs.append(f"age_week={age_week}")
+    url = "/predictQuick?" + "&".join(qs)
+    return RedirectResponse(url=url, status_code=307)
+
+@app.api_route("/oai/askQuick", methods=["GET", "POST", "OPTIONS", "HEAD"], tags=["meta"])
+async def oai_ask_proxy(request: Request,
+                        q: str | None = None,
+                        temperature: float | None = None,
+                        humidity: float | None = None,
+                        co2: float | None = None,
+                        feed: float | None = None,
+                        age_week: int | None = None):
+    if not q:
+        return {
+            "ok": True,
+            "probe": "askQuick",
+            "usage": "POST/GET with query: q, [temperature], [humidity], [co2], [feed], [age_week]"
+        }
+    qs = [f"q={q}"]
+    if temperature is not None: qs.append(f"temperature={temperature}")
+    if humidity is not None: qs.append(f"humidity={humidity}")
+    if co2 is not None: qs.append(f"co2={co2}")
+    if feed is not None: qs.append(f"feed={feed}")
+    if age_week is not None: qs.append(f"age_week={age_week}")
+    url = "/askQuick?" + "&".join(qs)
+    return RedirectResponse(url=url, status_code=307)
+
+
+
 # -----------------------------
 # Global exception -> 200 JSON
 # -----------------------------
