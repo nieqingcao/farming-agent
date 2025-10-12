@@ -667,63 +667,208 @@ def _to_float(x, default=None):
     except Exception:
         return default
 
-@app.post("/predict")
-async def predict(request: Request):
-    """
-    兼容两种调用：
-    1) JSON body: {"temperature":28,"humidity":65,"co2":1300,"feed":1.2,"age_week":4}
-    2) Query:     ?temperature=28&humidity=65&co2=1300&feed=1.2&age_week=4
+# @app.post("/predict")
+# async def predict(request: Request):
+#     """
+#     兼容两种调用：
+#     1) JSON body: {"temperature":28,"humidity":65,"co2":1300,"feed":1.2,"age_week":4}
+#     2) Query:     ?temperature=28&humidity=65&co2=1300&feed=1.2&age_week=4
 
-    必填：temperature、humidity、co2
-    可选：feed, age_week
-    """
-    # 1) 同时拿到 query + body（平台可能二选一）
-    q = dict(request.query_params)
-    try:
-        j = await request.json()
-        if not isinstance(j, dict):
-            j = {}
-    except Exception:
-        j = {}
-    data = {**q, **j}  # JSON 覆盖 query
+#     必填：temperature、humidity、co2
+#     可选：feed, age_week
+#     """
+#     # 1) 同时拿到 query + body（平台可能二选一）
+#     q = dict(request.query_params)
+#     try:
+#         j = await request.json()
+#         if not isinstance(j, dict):
+#             j = {}
+#     except Exception:
+#         j = {}
+#     data = {**q, **j}  # JSON 覆盖 query
 
-    # 2) 容错解析（允许带单位/字符串）
-    t  = _to_float(data.get("temperature"))
-    h  = _to_float(data.get("humidity"))
-    c  = _to_float(data.get("co2"))
-    fd = _to_float(data.get("feed"), 1.0)
-    aw = _to_float(data.get("age_week"), 4.0)
-    aw = int(aw) if aw is not None else 4
+#     # 2) 容错解析（允许带单位/字符串）
+#     t  = _to_float(data.get("temperature"))
+#     h  = _to_float(data.get("humidity"))
+#     c  = _to_float(data.get("co2"))
+#     fd = _to_float(data.get("feed"), 1.0)
+#     aw = _to_float(data.get("age_week"), 4.0)
+#     aw = int(aw) if aw is not None else 4
 
-    # 3) 必填校验（缺了也返回 200，不抛 500/KeyError）
-    missing = [k for k, v in {"temperature": t, "humidity": h, "co2": c}.items() if v is None]
+#     # 3) 必填校验（缺了也返回 200，不抛 500/KeyError）
+#     missing = [k for k, v in {"temperature": t, "humidity": h, "co2": c}.items() if v is None]
+#     if missing:
+#         return JSONResponse({
+#             "ok": True,
+#             "error": "missing_parameters",
+#             "missing": missing,
+#             "usage": "请提供 temperature(°C)、humidity(%)、co2(ppm)；可放在 JSON body 或 query。数值可带单位，如 28℃/65%/1300 ppm。"
+#         }, status_code=200)
+
+#     # 4) 组装原来的 EnvReading，再走你原来的推理/建议流程
+#     env = EnvReading(temperature=t, humidity=h, co2=c, feed=fd, age_week=aw)
+
+#     # 确保有模型；若无则即时训练一次（避免首次请求 500）
+#     m = _load_model()
+#     if not m:
+#         df = _maybe_load_csv(DATA_CSV)
+#         m = _train_internal(df)
+#         _save_model(m)
+
+#     row = env.dict()
+#     sr, dg = _predict_pair(row, m)
+#     rules = _ensure_rules()
+#     hits, advice_text = _build_hits_and_text(row, rules)
+
+#     global_imp = _global_importance_percent(m)
+#     slopes     = _local_slopes(row, m)
+#     gen_rules  = _generated_if_else(row, slopes, rules)
+#     anomalies  = _detect_anomalies(row, rules)
+
+#     return {
+#         "prediction": {
+#             "survival_rate": round(sr, 2),
+#             "daily_gain": round(dg, 2),
+#             "model_version": m.get("model_version", "unknown"),
+#             "trace_id": str(uuid.uuid4())
+#         },
+#         "advice": {
+#             "advice": advice_text,
+#             "hits": hits,
+#             "rules_version": rules.get("version", "")
+#         },
+#         "explain": {
+#             "global_importance_percent": global_imp,
+#             "local_slopes_per_unit": slopes,
+#             "generated_rules": gen_rules
+#         },
+#         "anomalies": anomalies,
+#         "model_metrics": m.get("metrics", [])
+#     }
+
+# @app.get("/predict")
+# async def predict_get(request: Request):
+#     # 复用 POST 逻辑
+#     return await predict(request)
+
+# ===== 在文件顶部已有的 import 之后，补上 =====
+from pydantic import BaseModel, Field
+from typing import Optional, Dict, Any, Union
+import json, re
+
+# 中文/别名 -> 英文键
+_CN_ALIASES = {
+    "温度": "temperature",
+    "湿度": "humidity",
+    "co2": "co2",
+    "CO2": "co2",
+    "周龄": "age_week",
+    "周": "age_week",
+    "饲喂量": "feed",
+}
+
+def _normalize_payload(data: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """把 {"query":"温度=23, 湿度=60, CO2=1000"} 或 dict 统一成英文键的 dict"""
+    if data is None:
+        return {}
+    if isinstance(data, str):
+        s = data.strip()
+        # 尝试 JSON 字符串
+        if s.startswith("{") and s.endswith("}"):
+            try:
+                data = json.loads(s)
+            except Exception:
+                pass
+        # 尝试 "k=v, k=v" 形式
+        if isinstance(data, str):
+            obj = {}
+            for p in re.split(r"[，,]\s*", s):
+                if "=" in p:
+                    k, v = p.split("=", 1)
+                    obj[k.strip()] = v.strip()
+            data = obj
+    if not isinstance(data, dict):
+        return {}
+    norm = {}
+    for k, v in data.items():
+        key = _CN_ALIASES.get(k, k)
+        if isinstance(v, str):
+            v = v.replace(",", "").replace("%", "")
+        norm[key] = v
+    return norm
+
+
+# ===== Swagger 可填写的请求体模型 =====
+class PredictBody(BaseModel):
+    temperature: float = Field(..., description="环境温度(°C)")
+    humidity: float = Field(..., description="相对湿度(%)")
+    co2: float = Field(..., description="CO2 浓度(ppm)")
+    feed: Optional[float] = Field(None, description="饲喂量（单位自定）")
+    age_week: Optional[float] = Field(None, description="周龄(week)")
+    # 兼容平台把输入塞进 'query' 的情况（可中文键名的字符串）
+    query: Optional[str] = Field(
+        None,
+        description="可选：字符串形式，如 '温度=23, 湿度=60, CO2=1000, feed=1.2, age_week=4'"
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "temperature": 28,
+                    "humidity": 65,
+                    "co2": 1300,
+                    "feed": 1.2,
+                    "age_week": 4
+                },
+                {
+                    "query": "温度=23, 湿度=60, CO2=1000, feed=1.2, age_week=4"
+                }
+            ]
+        }
+    }
+
+
+# ===== 用显式模型声明 /predict（Swagger 就能输入了）=====
+@app.post("/predict", summary="Predict", tags=["default"])
+def predict(payload: PredictBody):
+    # 1) 兼容 query 字段（字符串或中文键名）
+    data = payload.model_dump(exclude_none=True)
+    q = data.pop("query", None)
+    if q:
+        data = {**_normalize_payload(q), **data}
+
+    # 2) 完整性校验（避免 KeyError）
+    required = ["temperature", "humidity", "co2"]
+    missing = [k for k in required if k not in data]
     if missing:
-        return JSONResponse({
-            "ok": True,
-            "error": "missing_parameters",
-            "missing": missing,
-            "usage": "请提供 temperature(°C)、humidity(%)、co2(ppm)；可放在 JSON body 或 query。数值可带单位，如 28℃/65%/1300 ppm。"
-        }, status_code=200)
+        return {
+            "detail": f"Missing required fields: {', '.join(missing)}",
+            "hint": "可直接填 JSON 体，或用 query 字段字符串（支持中文键名）"
+        }
 
-    # 4) 组装原来的 EnvReading，再走你原来的推理/建议流程
-    env = EnvReading(temperature=t, humidity=h, co2=c, feed=fd, age_week=aw)
-
-    # 确保有模型；若无则即时训练一次（避免首次请求 500）
+    # 3) 你的原始逻辑（保持不变）
     m = _load_model()
     if not m:
         df = _maybe_load_csv(DATA_CSV)
         m = _train_internal(df)
         _save_model(m)
 
-    row = env.dict()
+    row = {
+        "temperature": float(data["temperature"]),
+        "humidity": float(data["humidity"]),
+        "co2": float(data["co2"]),
+        "feed": float(data["feed"]) if "feed" in data and data["feed"] is not None else 0.0,
+        "age_week": float(data["age_week"]) if "age_week" in data and data["age_week"] is not None else 0.0,
+    }
+
     sr, dg = _predict_pair(row, m)
     rules = _ensure_rules()
     hits, advice_text = _build_hits_and_text(row, rules)
-
     global_imp = _global_importance_percent(m)
-    slopes     = _local_slopes(row, m)
-    gen_rules  = _generated_if_else(row, slopes, rules)
-    anomalies  = _detect_anomalies(row, rules)
+    slopes = _local_slopes(row, m)
+    gen_rules = _generated_if_else(row, slopes, rules)
+    anomalies = _detect_anomalies(row, rules)
 
     return {
         "prediction": {
@@ -735,22 +880,16 @@ async def predict(request: Request):
         "advice": {
             "advice": advice_text,
             "hits": hits,
-            "rules_version": rules.get("version", "")
+            "rules_version": rules.get("version", "v1.0")
         },
         "explain": {
             "global_importance_percent": global_imp,
             "local_slopes_per_unit": slopes,
-            "generated_rules": gen_rules
+            "generated_rules": gen_rules,
+            "anomalies": anomalies
         },
-        "anomalies": anomalies,
-        "model_metrics": m.get("metrics", [])
+        "model_metrics": m.get("metrics", None)
     }
-
-@app.get("/predict")
-async def predict_get(request: Request):
-    # 复用 POST 逻辑
-    return await predict(request)
-
 
 
 # 快速预测（POST）
