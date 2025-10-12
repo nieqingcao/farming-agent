@@ -985,29 +985,62 @@ def ask_quick(
 # ):
 #     return ask_quick(q, temperature, humidity, co2, feed, age_week)
 
+# 放在文件顶部有的话可忽略
 import json, re
+from typing import Optional
+from fastapi import Query
 
-@app.get("/askQuick")
-def ask_quick(q: str):
-    # 尝试解析 JSON
+def _parse_any_text(s: str) -> dict:
+    # 1) JSON 字符串 -> dict
     try:
-        data = json.loads(q)
-        if isinstance(data, dict):
-            return predict(EnvReading(**data))
+        obj = json.loads(s)
+        if isinstance(obj, dict):
+            return {k.lower(): v for k, v in obj.items()}
     except Exception:
         pass
+    # 2) k=v 或 “温度=28, 湿度=65 …” 等
+    parts = re.split(r"[,\n，；;]+", s)
+    data = {}
+    for p in parts:
+        m = re.match(r"\s*([A-Za-z_一-龥]+)\s*[:=]\s*([\-+0-9\.]+)\s*$", p)
+        if m:
+            data[m.group(1).lower()] = float(m.group(2))
+    # 别名映射
+    alias = {
+        "temperature": ["temp","t","温度"],
+        "humidity": ["hum","h","湿度"],
+        "co2": ["co₂","二氧化碳","二氧"],
+        "feed": ["feeding","饲喂","饲料","投喂"],
+        "age_week": ["age","week","agew","周龄"]
+    }
+    out = {}
+    for k, als in alias.items():
+        if k in data:
+            out[k] = data[k]; continue
+        for a in als:
+            if a in data:
+                out[k] = data[a]; break
+    return out
 
-    # 如果不是 JSON，则尝试解析 "k=v" 格式
-    kv_pairs = re.findall(r'(\w+)\s*[=:]\s*([0-9\.]+)', q)
-    data = {k.lower(): float(v) for k, v in kv_pairs}
-    expected = ["temperature", "humidity", "co2", "feed", "age_week"]
-    if not all(k in data for k in expected):
+@app.get("/askQuick")
+def ask_quick(
+    q: Optional[str] = Query(None, description="free-text or JSON"),
+    query: Optional[str] = Query(None, description="alias of q"),
+    text: Optional[str] = Query(None, description="alias of q")
+):
+    raw = (q or query or text or "").strip()
+    data = _parse_any_text(raw)
+
+    req = ["temperature","humidity","co2","feed","age_week"]
+    missing = [k for k in req if k not in data]
+    if missing:
         return {
-            "error": "missing fields",
-            "hint": "输入格式示例: temperature=28, humidity=65, co2=1300, feed=1.2, age_week=4"
+            "error": f"missing fields: {', '.join(missing)}",
+            "hint": "示例：temperature=28, humidity=65, co2=1300, feed=1.2, age_week=4 或等价 JSON"
         }
+    # 复用你已有的预测逻辑
+    return predict(EnvReading(**{k: float(data[k]) for k in req}))
 
-    return predict(EnvReading(**data))
 
 
 # 诊断端点：查看平台发来的 method/headers/query/body_len
