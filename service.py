@@ -47,6 +47,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/oai/ping")
+def oai_ping():
+    return {"ok": True, "service": "farming-agent"}
+
+@app.post("/oai/ping")
+async def oai_ping_post(request):
+    try:
+        _ = await request.json()
+    except Exception:
+        pass
+    return {"ok": True, "note": "safe POST for platform import"}
+
+@app.options("/oai/ping")
+def oai_ping_options():
+    from fastapi import Response
+    return Response(status_code=200)
+
+@app.head("/oai/ping")
+def oai_ping_head():
+    from fastapi import Response
+    return Response(status_code=200)
+
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
+
 # -----------------------------
 # Global exception -> 200 JSON
 # -----------------------------
