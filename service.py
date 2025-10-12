@@ -330,14 +330,18 @@ def _build_hits_and_text(env: Dict[str, float], rules: Dict[str, Any]) -> Tuple[
 
     hits = []
     for it in rules.get("items", []):
-        f = it.get("factor"); rg = it.get("range", {})
-        unit = rg.get("unit", "")
+        f = it.get("factor")
+        rg = it.get("range", {}) or {}
+        unit = rg.get("unit", "") or ""
         if f not in env or env[f] is None:
             continue
-        v = float(env[f])
-        pmin = rg.get("preferred_min"); pmax = rg.get("preferred_max")
 
-        status = None; target = None
+        v = float(env[f])
+        pmin = rg.get("preferred_min")
+        pmax = rg.get("preferred_max")
+
+        status = None
+        target = None
         if pmax is not None and v > pmax:
             status = "偏高"; target = pmax
         elif pmin is not None and v < pmin:
@@ -345,18 +349,28 @@ def _build_hits_and_text(env: Dict[str, float], rules: Dict[str, Any]) -> Tuple[
 
         if status:
             tpl = it.get("template", "{factor}{status} -> {action}")
+            # 同时提供两套别名：pmin/pmax 与 preferred_min/preferred_max
             ctx = _SafeDict(
-                status=status, measured=v, unit=unit, pmin=pmin, pmax=pmax,
-                action=it.get("action","调整"), target=target, factor=f
+                status=status,
+                measured=v,
+                unit=unit,
+                pmin=pmin, pmax=pmax,
+                preferred_min=pmin, preferred_max=pmax,
+                action=it.get("action", "调整"),
+                target=target,
+                factor=f
             )
-            # 安全格式化（不会因未知占位符报错）
             try:
                 text = tpl.format_map(ctx)
             except Exception:
-                # double-safe fallback
+                # 双重兜底
                 text = f"{f}{status}（{v}{unit}，宜 {pmin}–{pmax}{unit}），建议{it.get('action','调整')}，目标 {target}{unit}"
+
             hits.append({
-                "factor": f, "measured": v, "range": rg, "recommendation": text
+                "factor": f,
+                "measured": v,
+                "range": rg,
+                "recommendation": text
             })
 
     advice_text = "；".join([h["recommendation"] for h in hits]) if hits else "各参数均在适宜范围内，维持当前措施。"
