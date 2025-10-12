@@ -38,6 +38,23 @@ app = FastAPI(
     description="训练/推理/规则/问答 + 安全兜底；避免平台因 500 初始化失败。"
 )
 
+from fastapi import Request
+import logging
+logging.basicConfig(level=logging.INFO)
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    logging.info(f"[IMPORT-PROBE] {request.method} {request.url.path} q={dict(request.query_params)}")
+    try:
+        body = await request.body()
+        logging.info(f"[IMPORT-PROBE] body={body[:200]}")  # 仅打印前200字节
+    except Exception:
+        pass
+    response = await call_next(request)
+    logging.info(f"[IMPORT-PROBE] -> {response.status_code}")
+    return response
+
+
 # CORS 全放行（显式允许所有方法/头）
 app.add_middleware(
     CORSMiddleware,
