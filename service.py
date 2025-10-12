@@ -610,8 +610,104 @@ def put_rules(new_rules: RuleSet = Body(...)):
         return {"ok": False, "detail": str(e)}
 
 # 标准预测
+# @app.post("/predict")
+# def predict(env: EnvReading):
+#     # 确保有模型；若无则即时训练一次（避免首次请求 500）
+#     m = _load_model()
+#     if not m:
+#         df = _maybe_load_csv(DATA_CSV)
+#         m = _train_internal(df)
+#         _save_model(m)
+
+#     row = env.dict()
+#     sr, dg = _predict_pair(row, m)
+#     rules = _ensure_rules()
+#     hits, advice_text = _build_hits_and_text(row, rules)
+
+#     global_imp = _global_importance_percent(m)
+#     slopes = _local_slopes(row, m)
+#     gen_rules = _generated_if_else(row, slopes, rules)
+#     anomalies = _detect_anomalies(row, rules)
+
+#     return {
+#         "prediction": {
+#             "survival_rate": round(sr, 2),
+#             "daily_gain": round(dg, 2),
+#             "model_version": m.get("model_version", "unknown"),
+#             "trace_id": str(uuid.uuid4())
+#         },
+#         "advice": {
+#             "advice": advice_text,
+#             "hits": hits,
+#             "rules_version": rules.get("version", "")
+#         },
+#         "explain": {
+#             "global_importance_percent": global_imp,
+#             "local_slopes_per_unit": slopes,
+#             "generated_rules": gen_rules
+#         },
+#         "anomalies": anomalies,
+#         "model_metrics": m.get("metrics", [])
+#     }
+from fastapi import Request
+from fastapi.responses import JSONResponse
+import uuid
+import re
+
+_UNIT_RE = re.compile(r"([-+]?\d+(\.\d+)?)(\s*[a-zA-Z%°℃/]*| ppm)?")  # 支持 28℃/65%/1300 ppm 等
+
+def _to_float(x, default=None):
+    if x is None:
+        return default
+    try:
+        # 允许传入 "28℃"、"65%"、"1300 ppm" 等
+        s = str(x).strip()
+        m = _UNIT_RE.match(s)
+        return float(m.group(1)) if m else default
+    except Exception:
+        return default
+
 @app.post("/predict")
-def predict(env: EnvReading):
+async def predict(request: Request):
+    """
+    兼容两种调用：
+    1) JSON body: {"temperature":28,"humidity":65,"co2":1300,"feed":1.2,"age_week":4}
+    2) Query:     ?temperature=28&humidity=65&co2=1300&feed=1.2&age_week=4
+
+    必填：temperature、humidity、co2
+    可选：feed, age_week
+    """
+    # 1) 同时拿到 query + body（平台可能二选一）
+    q = dict(request.query_params)
+    try:
+        j = await request.json()
+        if not isinstance(j, dict):
+            j = {}
+    except Exception:
+        j = {}
+    data = {**q, **j}  # JSON 覆盖 query
+
+    # 2) 容错解析（允许带单位/字符串）
+    t  = _to_float(data.get("temperature"))
+    h  = _to_float(data.get("humidity"))
+    c  = _to_float(data.get("co2"))
+    fd = _to_float(data.get("feed"), 1.0)
+    aw = _to_float(data.get("age_week"), 4.0)
+    aw = int(aw) if aw is not None else 4
+
+    # 3) 必填校验（缺了也返回 200，不抛 500/KeyError）
+    missing = [k for k, v in {"temperature": t, "humidity": h, "co2": c}.items() if v is None]
+    if missing:
+        return JSONResponse({
+            "ok": True,
+            "error": "missing_parameters",
+            "missing": missing,
+            "usage": "请提供 temperature(°C)、humidity(%)、co2(ppm)；可放在 JSON body 或 query。数值可带单位，如 28℃/65%/1300 ppm。"
+        }, status_code=200)
+
+    # 4) 组装原来的 EnvReading，再走你原来的推理/建议流程
+    env = EnvReading(temperature=t, humidity=h, co2=c, feed=fd, age_week=aw)
+
     # 确保有模型；若无则即时训练一次（避免首次请求 500）
     m = _load_model()
     if not m:
@@ -625,9 +721,9 @@ def predict(env: EnvReading):
     hits, advice_text = _build_hits_and_text(row, rules)
 
     global_imp = _global_importance_percent(m)
-    slopes = _local_slopes(row, m)
-    gen_rules = _generated_if_else(row, slopes, rules)
-    anomalies = _detect_anomalies(row, rules)
+    slopes     = _local_slopes(row, m)
+    gen_rules  = _generated_if_else(row, slopes, rules)
+    anomalies  = _detect_anomalies(row, rules)
 
     return {
         "prediction": {
@@ -649,6 +745,8 @@ def predict(env: EnvReading):
         "anomalies": anomalies,
         "model_metrics": m.get("metrics", [])
     }
+
+
 
 # 快速预测（POST）
 @app.post("/predictQuick")
