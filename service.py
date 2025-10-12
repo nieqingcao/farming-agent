@@ -746,6 +746,11 @@ async def predict(request: Request):
         "model_metrics": m.get("metrics", [])
     }
 
+@app.get("/predict")
+async def predict_get(request: Request):
+    # 复用 POST 逻辑
+    return await predict(request)
+
 
 
 # 快速预测（POST）
