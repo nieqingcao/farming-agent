@@ -261,6 +261,114 @@ async def ask_ultra(
 
     return predict(EnvReading(**{k: float(data[k]) for k in need}))
 
+# ===== 放在文件顶部（若已存在可忽略） =====
+import json, re
+from typing import Optional, Any, Dict
+from urllib.parse import parse_qsl
+from fastapi import Request, Query, Body
+
+# 统一解析：JSON / querystring / 逗号分隔 / 别名归一
+def _parse_any_text(raw: str) -> Dict[str, float]:
+    # 1) 尝试 JSON 对象（或 JSON 字符串里包 {"q": "..."}）
+    try:
+        obj = json.loads(raw)
+        if isinstance(obj, dict):
+            # 优先从 {"q"/"query"/"text": "..."} 取文本
+            for k in ("q", "query", "text"):
+                v = obj.get(k)
+                if isinstance(v, str) and v.strip():
+                    raw = v.strip()
+                    break
+            else:
+                # 直接就是五个字段
+                return {k.lower(): float(obj[k]) for k in obj if isinstance(obj.get(k), (int, float, str))}
+    except Exception:
+        pass
+
+    # 2) 先按 a=1&b=2 的 querystring 解析（也兼容已 URL 编码的文本）
+    try:
+        qs = dict(parse_qsl(raw, keep_blank_values=False))
+    except Exception:
+        qs = {}
+    data: Dict[str, str] = {k.lower(): v for k, v in qs.items()} if qs else {}
+
+    # 3) 若还没解析到，再按分隔符拆：逗号/中文逗号/分号/空白/&
+    if not data:
+        for p in re.split(r"[,\n\r\t\s；;，&]+", raw):
+            m = re.match(r"\s*([A-Za-z_一-龥]+)\s*[:=]\s*([\-+0-9\.]+)\s*$", p)
+            if m:
+                data[m.group(1).lower()] = m.group(2)
+
+    # 4) 别名归一
+    alias = {
+        "temperature": ["temp", "t", "温度"],
+        "humidity":    ["hum", "h", "湿度"],
+        "co2":         ["co₂", "二氧化碳", "二氧"],
+        "feed":        ["feeding", "饲喂", "饲料", "投喂"],
+        "age_week":    ["age", "week", "agew", "周龄"]
+    }
+    out: Dict[str, float] = {}
+    for key, als in alias.items():
+        if key in data:
+            try: out[key] = float(data[key])
+            except: pass
+            continue
+        for a in als:
+            if a in data:
+                try: out[key] = float(data[a])
+                except: pass
+                break
+    return out
+
+# ===== 统一入口：POST/GET 都行，query/body 任意传法都能吃 =====
+@app.api_route("/askUltra", methods=["POST", "GET"])
+async def ask_ultra(
+    request: Request,
+    q: Optional[str] = Query(None, description="alias"),
+    query: Optional[str] = Query(None, description="alias"),
+    text: Optional[str] = Query(None, description="alias"),
+    body_any: Any = Body(None)
+):
+    # 1) 先从 query string 别名里拿
+    raw = (q or query or text or "").strip()
+
+    # 2) 再尝试 JSON body（绝不使用 body['query'] 这种下标取值，避免 KeyError）
+    if not raw:
+        try:
+            if isinstance(body_any, dict):
+                raw = (body_any.get("q") or body_any.get("query") or body_any.get("text") or "").strip()
+                if not raw:
+                    # 直接是五字段 JSON
+                    lower = {k.lower(): body_any[k] for k in body_any if k}
+                    need = ["temperature","humidity","co2","feed","age_week"]
+                    if all(k in lower for k in need):
+                        return predict(EnvReading(**{k: float(lower[k]) for k in need}))
+            elif isinstance(body_any, str):
+                raw = body_any.strip()
+        except Exception:
+            raw = ""
+
+    # 3) 如果还没有，从原始 body 读纯文本
+    if not raw:
+        try:
+            b = await request.body()
+            if b: raw = b.decode("utf-8", "ignore").strip()
+        except Exception:
+            raw = ""
+
+    data = _parse_any_text(raw)
+    need = ["temperature","humidity","co2","feed","age_week"]
+    missing = [k for k in need if k not in data]
+
+    if missing:
+        return {
+            "error": f"missing fields: {', '.join(missing)}",
+            "hint": "temperature=28, humidity=65, co2=1300, feed=1.2, age_week=4  或  JSON: {\"temperature\":28,...}",
+            "echo": raw
+        }
+
+    # 走你已有的预测逻辑
+    return predict(EnvReading(**{k: float(data[k]) for k in need}))
 
 
 # -----------------------------
