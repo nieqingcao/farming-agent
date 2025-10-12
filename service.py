@@ -973,17 +973,42 @@ def ask_quick(
         return {"answer": full["advice"]["advice"], "provenance": {"from_rules": full["advice"]["hits"]}}
     return {"answer": ASK_ENUM.get(q, "暂不支持该固定句式。"), "provenance": {}}
 
-# 快问（GET 别名）
+# # 快问（GET 别名）
+# @app.get("/askQuick")
+# def ask_quick_get(
+#     q: str = Query(..., description="固定句式问题"),
+#     temperature: Optional[float] = Query(None),
+#     humidity: Optional[float] = Query(None),
+#     co2: Optional[float] = Query(None),
+#     feed: Optional[float] = Query(None),
+#     age_week: Optional[int] = Query(None),
+# ):
+#     return ask_quick(q, temperature, humidity, co2, feed, age_week)
+
+import json, re
+
 @app.get("/askQuick")
-def ask_quick_get(
-    q: str = Query(..., description="固定句式问题"),
-    temperature: Optional[float] = Query(None),
-    humidity: Optional[float] = Query(None),
-    co2: Optional[float] = Query(None),
-    feed: Optional[float] = Query(None),
-    age_week: Optional[int] = Query(None),
-):
-    return ask_quick(q, temperature, humidity, co2, feed, age_week)
+def ask_quick(q: str):
+    # 尝试解析 JSON
+    try:
+        data = json.loads(q)
+        if isinstance(data, dict):
+            return predict(EnvReading(**data))
+    except Exception:
+        pass
+
+    # 如果不是 JSON，则尝试解析 "k=v" 格式
+    kv_pairs = re.findall(r'(\w+)\s*[=:]\s*([0-9\.]+)', q)
+    data = {k.lower(): float(v) for k, v in kv_pairs}
+    expected = ["temperature", "humidity", "co2", "feed", "age_week"]
+    if not all(k in data for k in expected):
+        return {
+            "error": "missing fields",
+            "hint": "输入格式示例: temperature=28, humidity=65, co2=1300, feed=1.2, age_week=4"
+        }
+
+    return predict(EnvReading(**data))
+
 
 # 诊断端点：查看平台发来的 method/headers/query/body_len
 @app.api_route("/_diag/echo", methods=["GET","POST","PUT","DELETE","PATCH","OPTIONS","HEAD"])
