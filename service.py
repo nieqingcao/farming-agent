@@ -1,3 +1,4 @@
+# 版本3 202510
 # service.py
 import os
 import json
@@ -94,7 +95,7 @@ def healthz():
 from fastapi import Request
 from fastapi.responses import RedirectResponse
 
-# ✅ 平台安全代理：空调用 => 200；有参数 => 307 转到真实端点
+# 平台安全代理：空调用 => 200；有参数 => 307 转到真实端点
 @app.api_route("/oai/predictQuick", methods=["GET", "POST", "OPTIONS", "HEAD"], tags=["meta"])
 async def oai_predict_proxy(request: Request,
                             temperature: float | None = None,
@@ -109,7 +110,7 @@ async def oai_predict_proxy(request: Request,
             "probe": "predictQuick",
             "usage": "POST/GET with query: temperature, humidity, co2, [feed], [age_week]"
         }
-    # 用户/评委带参调用——重定向到你原有真实端点
+    # 用户/评委带参调用——重定向到原有真实端点
     qs = []
     qs.append(f"temperature={temperature}")
     qs.append(f"humidity={humidity}")
@@ -218,7 +219,7 @@ def _parse_any_text(s: str) -> Dict[str, float]:
                 out[k] = data[a]; break
     return out
 
-# ✅ 超兼容入口：无参数要求；Body 可是文本/JSON；Query 也能用
+# 超兼容入口：无参数要求；Body 可是文本/JSON；Query 也能用
 @app.post("/askUltra")
 async def ask_ultra(
     request: Request,
@@ -1382,7 +1383,7 @@ if __name__ == "__main__":
 
 
 
-
+# 版本2 本地可行但智能体上需要调整 202510
 # # service.py
 # # Farming Data Optimization Agent (final)
 # # - Health: /, /healthz
@@ -1917,7 +1918,7 @@ if __name__ == "__main__":
 
 
 
-
+# 版本1 实现简单功能 202510
 # # # service.py
 # # # FastAPI service for Farming Data Optimization Agent
 # # # - Health checks: /, /healthz
@@ -2412,7 +2413,7 @@ if __name__ == "__main__":
 # #     uvicorn.run("service:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=True)
 
 
-
+# 初始版本，基于规则和自定义，无模型训练，无数据 202509
 # # # # service.py
 # # # from typing import Optional, Dict, Any
 # # # from fastapi import FastAPI, Query, Body, HTTPException
