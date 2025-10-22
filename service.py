@@ -8,6 +8,7 @@ from typing import Optional, List, Dict, Any, Tuple
 
 import numpy as np
 import pandas as pd
+import uuid
 from fastapi import FastAPI, Body, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
@@ -96,6 +97,51 @@ def oai_ping_head():
 def healthz():
     return {"ok": True}
 
+@app.post("/oai/predictQuick")
+async def oai_predict_quick(request: Request,
+    temperature: float = Query(None),
+    humidity: float = Query(None),
+    co2: float = Query(None),
+    feed: float = Query(1.0),
+    age_week: int = Query(4)
+):
+    # 1) 解析参数（如果 body 也有，就与 query 合并；此处略）
+    row = {"temperature": temperature, "humidity": humidity, "co2": co2, "feed": feed, "age_week": age_week}
+
+    # 2) 走与 /predict 相同的内部逻辑
+    m = _load_model() or _train_internal(_maybe_load_csv(DATA_CSV))  # 保证有模型
+    sr, dg = _predict_pair(row, m)
+    rules = _ensure_rules()
+    hits, advice_text = _build_hits_and_text(row, rules)
+
+    global_imp = _global_importance_percent(m)
+    slopes = _local_slopes(row, m)
+    shape_hint = _shape_hint(m)                 # 如果已有该函数；没有就删掉此行和返回项
+    poly_coefs = _poly_coefs_snapshot(m)        # 同理：若无则删
+    gen_rules = _generated_if_else(row, slopes, rules)
+    anomalies = _detect_anomalies(row, rules)
+
+    # 3) 组装兼容 OAI 的返回（包含 explain）
+    return {
+        "survival_rate": round(sr, 2),
+        "daily_gain": round(dg, 2),
+        "weekly_gain": round(dg * 7, 2),
+        "advice": [advice_text] if advice_text else [],
+        "ranges": rules_to_ranges(rules),     # 若你已有该工具函数；没有就按规则结构返回
+        "weights": [{"factor": k, "importance_pct": v} for k, v in global_imp.items()],
+        "explain": {
+            "model_version": m.get("model_version", "unknown"),
+            "trace_id": str(uuid.uuid4()),
+            "rules_version": rules.get("version", "v1"),
+            "global_importance_percent": global_imp,
+            "local_slopes_per_unit": slopes,
+            "u_or_inverted_u": shape_hint if isinstance(shape_hint, dict) else {},
+            "poly_coefs_snapshot": poly_coefs if isinstance(poly_coefs, dict) else {},
+            "generated_rules": gen_rules,
+            "anomalies": anomalies,
+            "used_params_echo": row
+        }
+    }
 
 from fastapi import Request
 from fastapi.responses import RedirectResponse
