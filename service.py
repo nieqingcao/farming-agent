@@ -557,101 +557,232 @@ def _maybe_load_csv(path: str) -> pd.DataFrame:
     # return df
 
 def _train_internal(df: pd.DataFrame, test_size=0.2, random_state=42) -> Dict[str, Any]:
+    """
+    训练四个模型：
+    - daily_gain：决策树(tree_daily_gain) 负责数值预测 + 重要性；Ridge(linear_daily_gain) 负责局部边际
+    - survival_rate：决策树(tree_survival) 负责数值预测 + 重要性；Ridge(linear_survival) 负责局部边际
+    """
     features = ["temperature", "humidity", "co2", "feed", "age_week"]
     X = df[features].astype(float)
-    results = {}
 
     payload = {
         "model_version": f"prior-{int(time.time())}",
-        "algorithm": "ridge+tree_hinge",
+        "algorithm": "tree+ridge_explain",
+        "features": features,
         "metrics": []
     }
 
-    # 模型1：日增重（线性）
+    # --- daily_gain ---
     y_dg = df["daily_gain"].astype(float)
     Xtr, Xte, ytr, yte = train_test_split(X, y_dg, test_size=test_size, random_state=random_state)
-    lin = Ridge(alpha=1.0, random_state=random_state)
-    lin.fit(Xtr, ytr)
-    pred = lin.predict(Xte)
-    mape = float(np.mean(np.abs((yte - pred) / np.clip(yte, 1e-6, None))) * 100)
+    tree_dg = DecisionTreeRegressor(max_depth=5, random_state=random_state).fit(Xtr, ytr)
+    lin_dg  = Ridge(alpha=1.0, random_state=random_state).fit(Xtr, ytr)
+    pred_dg = tree_dg.predict(Xte)
     payload["metrics"].append({
         "target": "daily_gain",
-        "mae": float(mean_absolute_error(yte, pred)),
-        "mape": mape,
-        # "r2": float(r2_score(yte, pred)),
+        "model": "DecisionTreeRegressor",
+        "mae": float(mean_absolute_error(yte, pred_dg)),
+        "r2": float(r2_score(yte, pred_dg)),
         "n": int(len(yte))
     })
-    payload["linear_daily_gain"] = lin
-    payload["features"] = features
+    payload["tree_daily_gain"]   = tree_dg
+    payload["linear_daily_gain"] = lin_dg
 
-    # 模型2：成活率（树作为非线性/分段）
+    # --- survival_rate ---
     y_sr = df["survival_rate"].astype(float)
     Xtr2, Xte2, ytr2, yte2 = train_test_split(X, y_sr, test_size=test_size, random_state=random_state)
-    tree = DecisionTreeRegressor(max_depth=5, random_state=random_state)
-    tree.fit(Xtr2, ytr2)
-    pred2 = tree.predict(Xte2)
-    mape2 = float(np.mean(np.abs((yte2 - pred2) / np.clip(yte2, 1e-6, None))) * 100)
+    tree_sr = DecisionTreeRegressor(max_depth=5, random_state=random_state).fit(Xtr2, ytr2)
+    lin_sr  = Ridge(alpha=1.0, random_state=random_state).fit(Xtr2, ytr2)
+    pred_sr = tree_sr.predict(Xte2)
     payload["metrics"].append({
         "target": "survival_rate",
-        "mae": float(mean_absolute_error(yte2, pred2)),
-        "mape": mape2,
-        # "r2": float(r2_score(yte2, pred2)),
+        "model": "DecisionTreeRegressor",
+        "mae": float(mean_absolute_error(yte2, pred_sr)),
+        "r2": float(r2_score(yte2, pred_sr)),
         "n": int(len(yte2))
     })
-    payload["tree_survival"] = tree
+    payload["tree_survival"]   = tree_sr
+    payload["linear_survival"] = lin_sr
 
     return payload
 
-def _global_importance_percent(model_payload: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
-    # 将线性模型系数绝对值聚合为 daily_gain 的重要性
-    feats = model_payload.get("features", ["temperature", "humidity", "co2", "feed", "age_week"])
-    imp_dg = {k: 0.0 for k in feats}
-    lin = model_payload.get("linear_daily_gain")
-    if lin is not None and hasattr(lin, "coef_"):
-        coefs = np.abs(lin.coef_)
-        if coefs.sum() > 0:
-            perc = 100.0 * coefs / coefs.sum()
-            for i, f in enumerate(feats):
-                imp_dg[f] = float(perc[i])
+# def _train_internal(df: pd.DataFrame, test_size=0.2, random_state=42) -> Dict[str, Any]:
+#     features = ["temperature", "humidity", "co2", "feed", "age_week"]
+#     X = df[features].astype(float)
+#     results = {}
 
-    # 成活率重要性：用树的 feature_importances_
+#     payload = {
+#         "model_version": f"prior-{int(time.time())}",
+#         "algorithm": "ridge+tree_hinge",
+#         "metrics": []
+#     }
+
+#     # 模型1：日增重（线性）
+#     y_dg = df["daily_gain"].astype(float)
+#     Xtr, Xte, ytr, yte = train_test_split(X, y_dg, test_size=test_size, random_state=random_state)
+#     lin = Ridge(alpha=1.0, random_state=random_state)
+#     lin.fit(Xtr, ytr)
+#     pred = lin.predict(Xte)
+#     mape = float(np.mean(np.abs((yte - pred) / np.clip(yte, 1e-6, None))) * 100)
+#     payload["metrics"].append({
+#         "target": "daily_gain",
+#         "mae": float(mean_absolute_error(yte, pred)),
+#         "mape": mape,
+#         # "r2": float(r2_score(yte, pred)),
+#         "n": int(len(yte))
+#     })
+#     payload["linear_daily_gain"] = lin
+#     payload["features"] = features
+
+#     # 模型2：成活率（树作为非线性/分段）
+#     y_sr = df["survival_rate"].astype(float)
+#     Xtr2, Xte2, ytr2, yte2 = train_test_split(X, y_sr, test_size=test_size, random_state=random_state)
+#     tree = DecisionTreeRegressor(max_depth=5, random_state=random_state)
+#     tree.fit(Xtr2, ytr2)
+#     pred2 = tree.predict(Xte2)
+#     mape2 = float(np.mean(np.abs((yte2 - pred2) / np.clip(yte2, 1e-6, None))) * 100)
+#     payload["metrics"].append({
+#         "target": "survival_rate",
+#         "mae": float(mean_absolute_error(yte2, pred2)),
+#         "mape": mape2,
+#         # "r2": float(r2_score(yte2, pred2)),
+#         "n": int(len(yte2))
+#     })
+#     payload["tree_survival"] = tree
+
+#     return payload
+
+
+def _global_importance_percent(model_payload: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
+    """
+    使用两棵决策树的 feature_importances_ 计算全局重要性，并归一化为百分比。
+    分别返回 survival_rate 与 daily_gain 的重要性字典（百分比，和为100）。
+    """
+    feats = model_payload.get("features", ["temperature", "humidity", "co2", "feed", "age_week"])
+
+    def norm_to_percent(arr: np.ndarray) -> List[float]:
+        if arr is None or len(arr) == 0:
+            return [0.0] * len(feats)
+        s = float(arr.sum())
+        if s <= 0:
+            return [0.0] * len(feats)
+        return list((100.0 * arr / s).astype(float))
+
+    # daily_gain importance from tree
+    imp_dg = {k: 0.0 for k in feats}
+    tree_dg = model_payload.get("tree_daily_gain")
+    if tree_dg is not None and hasattr(tree_dg, "feature_importances_"):
+        perc = norm_to_percent(tree_dg.feature_importances_)
+        for i, f in enumerate(feats):
+            imp_dg[f] = float(perc[i])
+
+    # survival_rate importance from tree
     imp_sr = {k: 0.0 for k in feats}
-    tree = model_payload.get("tree_survival")
-    if tree is not None and hasattr(tree, "feature_importances_"):
-        imps = tree.feature_importances_
-        if imps.sum() > 0:
-            perc = 100.0 * imps / imps.sum()
-            for i, f in enumerate(feats):
-                imp_sr[f] = float(perc[i])
+    tree_sr = model_payload.get("tree_survival")
+    if tree_sr is not None and hasattr(tree_sr, "feature_importances_"):
+        perc = norm_to_percent(tree_sr.feature_importances_)
+        for i, f in enumerate(feats):
+            imp_sr[f] = float(perc[i])
 
     return {"survival_rate": imp_sr, "daily_gain": imp_dg}
 
+
+# def _global_importance_percent(model_payload: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
+#     # 将线性模型系数绝对值聚合为 daily_gain 的重要性
+#     feats = model_payload.get("features", ["temperature", "humidity", "co2", "feed", "age_week"])
+#     imp_dg = {k: 0.0 for k in feats}
+#     lin = model_payload.get("linear_daily_gain")
+#     if lin is not None and hasattr(lin, "coef_"):
+#         coefs = np.abs(lin.coef_)
+#         if coefs.sum() > 0:
+#             perc = 100.0 * coefs / coefs.sum()
+#             for i, f in enumerate(feats):
+#                 imp_dg[f] = float(perc[i])
+
+#     # 成活率重要性：用树的 feature_importances_
+#     imp_sr = {k: 0.0 for k in feats}
+#     tree = model_payload.get("tree_survival")
+#     if tree is not None and hasattr(tree, "feature_importances_"):
+#         imps = tree.feature_importances_
+#         if imps.sum() > 0:
+#             perc = 100.0 * imps / imps.sum()
+#             for i, f in enumerate(feats):
+#                 imp_sr[f] = float(perc[i])
+
+    # return {"survival_rate": imp_sr, "daily_gain": imp_dg}
+
+
 def _local_slopes(env: Dict[str, float], model_payload: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
-    # 简单用线性系数近似边际：unit step 定义
+    """
+    使用两条 Ridge 线性模型的系数给出 unit-step 边际变化：
+    - delta_daily_gain/source: linear_daily_gain.coef_
+    - delta_survival_rate/source: linear_survival.coef_
+    """
     unit = {"temperature": 1.0, "humidity": 1.0, "co2": 100.0, "feed": 0.1, "age_week": 1.0}
     feats = model_payload.get("features", ["temperature", "humidity", "co2", "feed", "age_week"])
-    lin = model_payload.get("linear_daily_gain")
+
+    lin_dg = model_payload.get("linear_daily_gain")
+    lin_sr = model_payload.get("linear_survival")
+
     res = {}
     for i, f in enumerate(feats):
-        dg_delta = 0.0
-        if lin is not None and hasattr(lin, "coef_"):
-            dg_delta = float(lin.coef_[i] * unit[f])
-        # 成活率用树模型无法直接给斜率，给一个近似系数（缩放）
-        sr_delta = dg_delta * 0.35
-        res[f] = {"unit_step": unit[f], "delta_survival_rate": round(sr_delta, 3), "delta_daily_gain": round(dg_delta, 3)}
+        dg_delta = float(lin_dg.coef_[i] * unit[f]) if (lin_dg is not None and hasattr(lin_dg, "coef_")) else 0.0
+        sr_delta = float(lin_sr.coef_[i] * unit[f]) if (lin_sr is not None and hasattr(lin_sr, "coef_")) else 0.0
+        res[f] = {
+            "unit_step": unit[f],
+            "delta_daily_gain": round(dg_delta, 3),
+            "delta_survival_rate": round(sr_delta, 3),
+            "source": "Ridge-based local slope"
+        }
     return res
 
-def _predict_pair(row: Dict[str, float], model_payload: Dict[str, Any]) -> Tuple[float, float]:
+
+# def _local_slopes(env: Dict[str, float], model_payload: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
+#     # 简单用线性系数近似边际：unit step 定义
+#     unit = {"temperature": 1.0, "humidity": 1.0, "co2": 100.0, "feed": 0.1, "age_week": 1.0}
+#     feats = model_payload.get("features", ["temperature", "humidity", "co2", "feed", "age_week"])
+#     lin = model_payload.get("linear_daily_gain")
+#     res = {}
+#     for i, f in enumerate(feats):
+#         dg_delta = 0.0
+#         if lin is not None and hasattr(lin, "coef_"):
+#             dg_delta = float(lin.coef_[i] * unit[f])
+#         # 成活率用树模型无法直接给斜率，给一个近似系数（缩放）
+#         sr_delta = dg_delta * 0.35
+#         res[f] = {"unit_step": unit[f], "delta_survival_rate": round(sr_delta, 3), "delta_daily_gain": round(dg_delta, 3)}
+#     return res
+
+
+def _predict_pair(row: Dict[str, Any], model_payload: Dict[str, Any]) -> Tuple[float, float]:
+    """
+    返回 (survival_rate, daily_gain)
+    两个指标的数值预测均来自决策树模型。
+    """
     feats = model_payload.get("features", ["temperature", "humidity", "co2", "feed", "age_week"])
-    X = np.array([[row.get(f, 0.0) for f in feats]], dtype=float)
-    sr, dg = 95.0, 100.0
-    lin = model_payload.get("linear_daily_gain")
-    if lin is not None:
-        dg = float(lin.predict(X)[0])
-    tree = model_payload.get("tree_survival")
-    if tree is not None:
-        sr = float(tree.predict(X)[0])
+    X = pd.DataFrame([[float(row.get(f, 0.0)) for f in feats]], columns=feats)
+
+    tree_sr = model_payload.get("tree_survival")
+    tree_dg = model_payload.get("tree_daily_gain")
+
+    sr = float(tree_sr.predict(X)[0]) if tree_sr is not None else 0.0
+    dg = float(tree_dg.predict(X)[0]) if tree_dg is not None else 0.0
+
+    # 生存率限定在 [0, 100]
+    sr = float(np.clip(sr, 0, 100))
     return sr, dg
+
+
+# def _predict_pair(row: Dict[str, float], model_payload: Dict[str, Any]) -> Tuple[float, float]:
+#     feats = model_payload.get("features", ["temperature", "humidity", "co2", "feed", "age_week"])
+#     X = np.array([[row.get(f, 0.0) for f in feats]], dtype=float)
+#     sr, dg = 95.0, 100.0
+#     lin = model_payload.get("linear_daily_gain")
+#     if lin is not None:
+#         dg = float(lin.predict(X)[0])
+#     tree = model_payload.get("tree_survival")
+#     if tree is not None:
+#         sr = float(tree.predict(X)[0])
+#     return sr, dg
 
 # -----------------------------
 # Advice / anomalies helpers
