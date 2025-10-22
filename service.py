@@ -22,7 +22,7 @@ from joblib import dump, load
 # -----------------------------
 # Constants & Paths
 # -----------------------------
-DATA_CSV = os.getenv("DATA_CSV", "data/farming_synth_dataset.csv")
+DATA_CSV = os.getenv("DATA_CSV", "data/farming_synth_dataset_2.csv")
 MODEL_DIR = os.getenv("MODEL_DIR", "models")
 MODEL_PATH = os.path.join(MODEL_DIR, "current.pkl")
 RULES_PATH = os.getenv("RULES_PATH", "rules.json")
@@ -512,49 +512,49 @@ def _save_model(payload: Dict[str, Any]) -> None:
 def _maybe_load_csv(path: str) -> pd.DataFrame:
     if os.path.exists(path):
         return pd.read_csv(path)
-    # 兜底：若缺 CSV，合成一份简单数据（避免训练时报错）
-    rng = np.random.default_rng(42)
-    n = 2000
-    temperature = rng.normal(22, 4, n).clip(10, 35)
-    humidity = rng.normal(55, 8, n).clip(30, 80)
-    co2 = rng.normal(900, 250, n).clip(400, 3000)
-    feed = rng.normal(1.1, 0.3, n).clip(0.3, 2.5)
-    age_week = rng.integers(0, 12, n)
+    # # 兜底：若缺 CSV，合成一份简单数据（避免训练时报错）
+    # rng = np.random.default_rng(42)
+    # n = 2000
+    # temperature = rng.normal(22, 4, n).clip(10, 35)
+    # humidity = rng.normal(55, 8, n).clip(30, 80)
+    # co2 = rng.normal(900, 250, n).clip(400, 3000)
+    # feed = rng.normal(1.1, 0.3, n).clip(0.3, 2.5)
+    # age_week = rng.integers(0, 12, n)
 
-    # 合成目标（仅作演示）
-    daily_gain = (
-        130
-        - 3.5 * np.maximum(0, temperature - 25)
-        - 2.0 * np.maximum(0, 18 - temperature)
-        - 0.011 * (co2 - 800)
-        - 0.6 * np.maximum(0, humidity - 60)
-        + 18.0 * (feed - 1.0)
-        + 1.1 * age_week
-        + rng.normal(0, 3, n)
-    )
-    survival_rate = (
-        97.5
-        - 0.8 * np.maximum(0, temperature - 25)
-        - 0.5 * np.maximum(0, 18 - temperature)
-        - 0.0025 * (co2 - 900)
-        - 0.12 * np.maximum(0, humidity - 60)
-        + 0.05 * (feed - 1.0) * 100
-        + 0.05 * age_week
-        + rng.normal(0, 0.6, n)
-    ).clip(70, 100)
+    # # 合成目标（仅作演示）
+    # daily_gain = (
+    #     130
+    #     - 3.5 * np.maximum(0, temperature - 25)
+    #     - 2.0 * np.maximum(0, 18 - temperature)
+    #     - 0.011 * (co2 - 800)
+    #     - 0.6 * np.maximum(0, humidity - 60)
+    #     + 18.0 * (feed - 1.0)
+    #     + 1.1 * age_week
+    #     + rng.normal(0, 3, n)
+    # )
+    # survival_rate = (
+    #     97.5
+    #     - 0.8 * np.maximum(0, temperature - 25)
+    #     - 0.5 * np.maximum(0, 18 - temperature)
+    #     - 0.0025 * (co2 - 900)
+    #     - 0.12 * np.maximum(0, humidity - 60)
+    #     + 0.05 * (feed - 1.0) * 100
+    #     + 0.05 * age_week
+    #     + rng.normal(0, 0.6, n)
+    # ).clip(70, 100)
 
-    df = pd.DataFrame({
-        "temperature": temperature,
-        "humidity": humidity,
-        "co2": co2,
-        "feed": feed,
-        "age_week": age_week,
-        "daily_gain": daily_gain,
-        "survival_rate": survival_rate,
-    })
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    df.to_csv(path, index=False)
-    return df
+    # df = pd.DataFrame({
+    #     "temperature": temperature,
+    #     "humidity": humidity,
+    #     "co2": co2,
+    #     "feed": feed,
+    #     "age_week": age_week,
+    #     "daily_gain": daily_gain,
+    #     "survival_rate": survival_rate,
+    # })
+    # os.makedirs(os.path.dirname(path), exist_ok=True)
+    # df.to_csv(path, index=False)
+    # return df
 
 def _train_internal(df: pd.DataFrame, test_size=0.2, random_state=42) -> Dict[str, Any]:
     features = ["temperature", "humidity", "co2", "feed", "age_week"]
