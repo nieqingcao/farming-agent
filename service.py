@@ -14,10 +14,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, conint, confloat
 from sklearn.linear_model import Ridge
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, r2_score
 from joblib import dump, load
+
 
 # -----------------------------
 # Constants & Paths
@@ -571,18 +574,26 @@ def _train_internal(df: pd.DataFrame, test_size=0.2, random_state=42) -> Dict[st
         "features": features,
         "metrics": []
     }
+    
+    # 辅助函数：计算 MAPE（避免除零）
+    def _mape(y_true, y_pred):
+        y_true, y_pred = np.array(y_true), np.array(y_pred)
+        mask = y_true != 0
+        return float(np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100.0)
 
     # --- daily_gain ---
     y_dg = df["daily_gain"].astype(float)
     Xtr, Xte, ytr, yte = train_test_split(X, y_dg, test_size=test_size, random_state=random_state)
     tree_dg = DecisionTreeRegressor(max_depth=5, random_state=random_state).fit(Xtr, ytr)
-    lin_dg  = Ridge(alpha=1.0, random_state=random_state).fit(Xtr, ytr)
+    lin_dg  = make_pipeline(StandardScaler(), Ridge(alpha=1.0, random_state=random_state)).fit(Xtr, ytr)
+    # lin_dg  = Ridge(alpha=1.0, random_state=random_state).fit(Xtr, ytr)
     pred_dg = tree_dg.predict(Xte)
     payload["metrics"].append({
         "target": "daily_gain",
         "model": "DecisionTreeRegressor",
         "mae": float(mean_absolute_error(yte, pred_dg)),
-        "r2": float(r2_score(yte, pred_dg)),
+        "mape(%)": _mape(yte, pred_dg),
+        # "r2": float(r2_score(yte, pred_dg)),
         "n": int(len(yte))
     })
     payload["tree_daily_gain"]   = tree_dg
@@ -592,13 +603,15 @@ def _train_internal(df: pd.DataFrame, test_size=0.2, random_state=42) -> Dict[st
     y_sr = df["survival_rate"].astype(float)
     Xtr2, Xte2, ytr2, yte2 = train_test_split(X, y_sr, test_size=test_size, random_state=random_state)
     tree_sr = DecisionTreeRegressor(max_depth=5, random_state=random_state).fit(Xtr2, ytr2)
-    lin_sr  = Ridge(alpha=1.0, random_state=random_state).fit(Xtr2, ytr2)
+    lin_sr  = make_pipeline(StandardScaler(), Ridge(alpha=1.0, random_state=random_state)).fit(Xtr2, ytr2)
+    # lin_sr  = Ridge(alpha=1.0, random_state=random_state).fit(Xtr2, ytr2)
     pred_sr = tree_sr.predict(Xte2)
     payload["metrics"].append({
         "target": "survival_rate",
         "model": "DecisionTreeRegressor",
         "mae": float(mean_absolute_error(yte2, pred_sr)),
-        "r2": float(r2_score(yte2, pred_sr)),
+        "mape(%)": _mape(yte2, pred_sr),
+        # "r2": float(r2_score(yte2, pred_sr)),
         "n": int(len(yte2))
     })
     payload["tree_survival"]   = tree_sr
@@ -712,11 +725,43 @@ def _global_importance_percent(model_payload: Dict[str, Any]) -> Dict[str, Dict[
     # return {"survival_rate": imp_sr, "daily_gain": imp_dg}
 
 
+def _extract_raw_scale_coefs(lin_pipeline, feat_names: List[str]) -> np.ndarray:
+    """
+    从 make_pipeline(StandardScaler(), Ridge) 中提取换算到“原始特征量纲”的系数向量。
+    若不是 pipeline（兼容老版本），则直接返回 coef_。
+    """
+    # 兼容：可能传进来就是 Ridge 而非 Pipeline
+    if hasattr(lin_pipeline, "coef_"):  # plain Ridge
+        return np.asarray(lin_pipeline.coef_, dtype=float)
+
+    # Pipeline: expect named_steps['standardscaler'] and ['ridge']
+    if hasattr(lin_pipeline, "named_steps"):
+        scaler = lin_pipeline.named_steps.get("standardscaler", None)
+        ridge  = lin_pipeline.named_steps.get("ridge", None)
+        if scaler is None or ridge is None:
+            # 尝试大小写稳妥些
+            for k, v in getattr(lin_pipeline, "named_steps", {}).items():
+                if "scaler" in k.lower():
+                    scaler = v
+                if "ridge" in k.lower():
+                    ridge = v
+        if scaler is not None and ridge is not None and hasattr(ridge, "coef_") and hasattr(scaler, "scale_"):
+            # 把标准化系数换算回原始量纲： w_raw = w_std / scale
+            scale = np.asarray(scaler.scale_, dtype=float)
+            wstd  = np.asarray(ridge.coef_, dtype=float)
+            # 防止除零
+            scale = np.where(scale == 0, 1.0, scale)
+            return wstd / scale
+
+    # 兜底：返回零向量
+    return np.zeros(len(feat_names), dtype=float)
+
+
 def _local_slopes(env: Dict[str, float], model_payload: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
     """
-    使用两条 Ridge 线性模型的系数给出 unit-step 边际变化：
-    - delta_daily_gain/source: linear_daily_gain.coef_
-    - delta_survival_rate/source: linear_survival.coef_
+    使用两条 Ridge(带标准化) 的“原始量纲系数”为单位增量给出边际：
+    - delta_daily_gain: linear_daily_gain 的原始量纲系数 * unit
+    - delta_survival_rate: linear_survival 的原始量纲系数 * unit
     """
     unit = {"temperature": 1.0, "humidity": 1.0, "co2": 100.0, "feed": 0.1, "age_week": 1.0}
     feats = model_payload.get("features", ["temperature", "humidity", "co2", "feed", "age_week"])
@@ -724,17 +769,21 @@ def _local_slopes(env: Dict[str, float], model_payload: Dict[str, Any]) -> Dict[
     lin_dg = model_payload.get("linear_daily_gain")
     lin_sr = model_payload.get("linear_survival")
 
+    coefs_dg = _extract_raw_scale_coefs(lin_dg, feats) if lin_dg is not None else np.zeros(len(feats))
+    coefs_sr = _extract_raw_scale_coefs(lin_sr, feats) if lin_sr is not None else np.zeros(len(feats))
+
     res = {}
     for i, f in enumerate(feats):
-        dg_delta = float(lin_dg.coef_[i] * unit[f]) if (lin_dg is not None and hasattr(lin_dg, "coef_")) else 0.0
-        sr_delta = float(lin_sr.coef_[i] * unit[f]) if (lin_sr is not None and hasattr(lin_sr, "coef_")) else 0.0
+        dg_delta = float(coefs_dg[i] * unit[f])
+        sr_delta = float(coefs_sr[i] * unit[f])
         res[f] = {
             "unit_step": unit[f],
             "delta_daily_gain": round(dg_delta, 3),
             "delta_survival_rate": round(sr_delta, 3),
-            "source": "Ridge-based local slope"
+            "source": "Ridge (on raw scale) with StandardScaler"
         }
     return res
+
 
 
 # def _local_slopes(env: Dict[str, float], model_payload: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
