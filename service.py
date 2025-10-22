@@ -897,29 +897,88 @@ def _build_hits_and_text(env: Dict[str, float], rules: Dict[str, Any]) -> Tuple[
     advice_text = "；".join([h["recommendation"] for h in hits]) if hits else "各参数均在适宜范围内，维持当前措施。"
     return hits, advice_text
 
+def _generated_if_else(env: Dict[str, float],
+                       slopes: Dict[str, Dict[str, float]],
+                       rules: Dict[str, Any]) -> List[str]:
+    """
+    基于 anomalies/rules 命中的项生成 if-else 建议，并用“局部导数 x 实际调整步数”估算收益：
+      steps = (target - current) / unit_step
+      Δ = (delta_per_unit) * steps
+    其中 delta_per_unit 来自 explain['local_slopes_per_unit'][feature]
+    """
+    def _fmt(x: float, nd: int = 2, suffix: str = "") -> str:
+        s = f"{x:+.{nd}f}"
+        # 去掉 -0.00 / +0.00 的负号
+        if s in ("+0.00", "-0.00"):
+            s = "+0.00"
+        return s + suffix
 
-
-def _generated_if_else(env: Dict[str, float], slopes: Dict[str, Dict[str, float]], rules: Dict[str, Any]) -> List[str]:
-    ret = []
+    ret: List[str] = []
     for it in rules.get("items", []):
-        f = it.get("factor"); rg = it.get("range", {})
-        unit = rg.get("unit","")
+        f = it.get("factor")
+        rg = it.get("range", {}) or {}
+        unit = rg.get("unit", "") or ""
         if f not in env:
             continue
+
         v = float(env[f])
-        pmin = rg.get("preferred_min"); pmax = rg.get("preferred_max")
-        s = slopes.get(f, {})
+        pmin = rg.get("preferred_min")
+        pmax = rg.get("preferred_max")
+
+        s = slopes.get(f, {}) or {}
+        unit_step = float(s.get("unit_step", 1.0))
+        dg_per = float(s.get("delta_daily_gain", 0.0))         # 每 unit_step 的 Δ日增重
+        sr_per = float(s.get("delta_survival_rate", 0.0))      # 每 unit_step 的 Δ成活率(%)
+
+        # 选择目标值
         if pmax is not None and v > pmax:
-            dg = s.get("delta_daily_gain", 0.0)
-            sr = s.get("delta_survival_rate", 0.0)
-            ret.append(f"if {f} > {pmax}{unit}: 建议降低至 {pmax}{unit}（预计 Δ成活率 {sr:+.2f}% / Δ日增重 {dg:+.2f} g/日）")
+            target = float(pmax)
+            cond = f"if {f} > {pmax}{unit}: "
+            action = f"建议降低至 {pmax}{unit}"
         elif pmin is not None and v < pmin:
-            dg = s.get("delta_daily_gain", 0.0)
-            sr = s.get("delta_survival_rate", 0.0)
-            ret.append(f"if {f} < {pmin}{unit}: 建议升至 {pmin}{unit}（预计 Δ成活率 {sr:+.2f}% / Δ日增重 {dg:+.2f} g/日）")
+            target = float(pmin)
+            cond = f"if {f} < {pmin}{unit}: "
+            action = f"建议升至 {pmin}{unit}"
         else:
-            ret.append(f"if {pmin} ≤ {f} ≤ {pmax}{unit}: 维持当前水平")
+            # 落在区间内
+            lo = "" if pmin is None else str(pmin)
+            hi = "" if pmax is None else str(pmax)
+            ret.append(f"if {lo} ≤ {f} ≤ {hi}{unit}: 维持当前水平")
+            continue
+
+        # 线性近似收益：导数 × 步数
+        steps = (target - v) / unit_step
+        dg_total = dg_per * steps
+        sr_total = sr_per * steps
+
+        # 组装
+        ret.append(
+            f"{cond}{action}（预计 Δ成活率 {_fmt(sr_total, 2, '%')} / Δ日增重 {_fmt(dg_total, 2, ' g/日')}）"
+        )
     return ret
+
+
+# def _generated_if_else(env: Dict[str, float], slopes: Dict[str, Dict[str, float]], rules: Dict[str, Any]) -> List[str]:
+#     ret = []
+#     for it in rules.get("items", []):
+#         f = it.get("factor"); rg = it.get("range", {})
+#         unit = rg.get("unit","")
+#         if f not in env:
+#             continue
+#         v = float(env[f])
+#         pmin = rg.get("preferred_min"); pmax = rg.get("preferred_max")
+#         s = slopes.get(f, {})
+#         if pmax is not None and v > pmax:
+#             dg = s.get("delta_daily_gain", 0.0)
+#             sr = s.get("delta_survival_rate", 0.0)
+#             ret.append(f"if {f} > {pmax}{unit}: 建议降低至 {pmax}{unit}（预计 Δ成活率 {sr:+.2f}% / Δ日增重 {dg:+.2f} g/日）")
+#         elif pmin is not None and v < pmin:
+#             dg = s.get("delta_daily_gain", 0.0)
+#             sr = s.get("delta_survival_rate", 0.0)
+#             ret.append(f"if {f} < {pmin}{unit}: 建议升至 {pmin}{unit}（预计 Δ成活率 {sr:+.2f}% / Δ日增重 {dg:+.2f} g/日）")
+#         else:
+#             ret.append(f"if {pmin} ≤ {f} ≤ {pmax}{unit}: 维持当前水平")
+#     return ret
 
 def _detect_anomalies(env: Dict[str, Any], rules: Dict[str, Any]) -> Dict[str, Any]:
     anomalies = []
