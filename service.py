@@ -749,33 +749,68 @@ def u_shape_summary(model_payload: Dict[str, Any]) -> Dict[str, Any]:
 
 def _local_slopes(env: Dict[str, float], model_payload: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
     """
-    使用 PolynomialFeatures(2) + Ridge 的前5个线性项系数作为局部边际近似。
-    仍返回原始单位下的增量。
+    使用 Polynomial(deg=2) 的一阶导数在“当前点”计算局部边际：
+    dŷ/dx_k = b_k + 2*a_k*x_k + sum_{j!=k} a_{k,j} * x_j
+    然后乘以 unit_step 给出“每单位（或每100ppm/每0.1kg等）变动”的影响。
     """
+    # 你的单位定义
     unit = {"temperature": 1.0, "humidity": 1.0, "co2": 100.0, "feed": 0.1, "age_week": 1.0}
     feats = model_payload.get("features", ["temperature", "humidity", "co2", "feed", "age_week"])
 
     lin_dg = model_payload.get("linear_daily_gain")
     lin_sr = model_payload.get("linear_survival")
 
-    coefs_dg = _extract_raw_scale_coefs(lin_dg, feats)
-    coefs_sr = _extract_raw_scale_coefs(lin_sr, feats)
+    # 取原始量纲下的“工程特征系数”和名字（包含一次、平方、交互项）
+    coefs_dg, names_dg = _poly_raw_coefs_and_names(lin_dg, feats)
+    coefs_sr, names_sr = _poly_raw_coefs_and_names(lin_sr, feats)
 
-    # 取前5项（线性部分）
-    coefs_dg = np.asarray(coefs_dg[:len(feats)])
-    coefs_sr = np.asarray(coefs_sr[:len(feats)])
+    # 为快速索引做字典
+    idx_dg = {n: i for i, n in enumerate(names_dg)}
+    idx_sr = {n: i for i, n in enumerate(names_sr)}
 
-    res = {}
-    for i, f in enumerate(feats):
-        dg_delta = float(coefs_dg[i] * unit[f])
-        sr_delta = float(coefs_sr[i] * unit[f])
-        res[f] = {
+    # 当前点的取值（原单位）
+    x = {f: float(env.get(f, 0.0)) for f in feats}
+
+    def grad_at_point(idx_map, coefs, names, target_feats):
+        """
+        计算每个基础特征 k 的局部导数：
+          grad_k = coef[k] + 2*coef[k^2]*x_k + sum_{j!=k} coef[k j]*x_j
+        若某项不存在，则按0处理
+        """
+        g = {}
+        for k in target_feats:
+            # 一次项
+            b = coefs[idx_map[k]] if k in idx_map else 0.0
+            # 平方项
+            a2 = coefs[idx_map[k + "^2"]] if (k + "^2") in idx_map else 0.0
+            # 交互项：k j 或 j k（sklearn 命名始终按字母序，因此只需找 "k j" 按该顺序）
+            cross_sum = 0.0
+            for j in target_feats:
+                if j == k: 
+                    continue
+                name_cross = f"{k} {j}" if f"{k} {j}" in idx_map else (f"{j} {k}" if f"{j} {k}" in idx_map else None)
+                if name_cross is not None:
+                    cross_sum += coefs[idx_map[name_cross]] * x[j]
+            # 一阶导数
+            g[k] = b + 2.0 * a2 * x[k] + cross_sum
+        return g
+
+    grad_dg = grad_at_point(idx_dg, coefs_dg, names_dg, feats)
+    grad_sr = grad_at_point(idx_sr, coefs_sr, names_sr, feats)
+
+    # 乘以 unit_step，形成输出
+    out = {}
+    for f in feats:
+        dg_delta = float(grad_dg[f] * unit[f])
+        sr_delta = float(grad_sr[f] * unit[f])
+        out[f] = {
             "unit_step": unit[f],
             "delta_daily_gain": round(dg_delta, 3),
             "delta_survival_rate": round(sr_delta, 3),
-            "source": "Polynomial Ridge (deg=2, on raw scale)"
+            "source": "Polynomial Ridge (deg=2) local derivative at current point"
         }
-    return res
+    return out
+
 
 
 def _predict_pair(row: Dict[str, Any], model_payload: Dict[str, Any]) -> Tuple[float, float]:
