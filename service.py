@@ -1251,6 +1251,8 @@ def predict(payload: PredictBody):
     slopes = _local_slopes(row, m)
     gen_rules = _generated_if_else(row, slopes, rules)
     anomalies = _detect_anomalies(row, rules)
+    coefs_dg, names_dg = _poly_raw_coefs_and_names(m["linear_daily_gain"], m["features"])
+    coefs_sr, names_sr = _poly_raw_coefs_and_names(m["linear_survival"],   m["features"])
 
     return {
         "prediction": {
