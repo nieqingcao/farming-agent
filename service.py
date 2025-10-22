@@ -20,6 +20,8 @@ from sklearn.tree import DecisionTreeRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, r2_score
 from joblib import dump, load
+from typing import Dict, Any, List, Tuple
+
 
 
 # -----------------------------
@@ -574,51 +576,6 @@ def _train_internal(df: pd.DataFrame, test_size=0.2, random_state=42) -> Dict[st
 
     return payload
 
-# def _train_internal(df: pd.DataFrame, test_size=0.2, random_state=42) -> Dict[str, Any]:
-#     features = ["temperature", "humidity", "co2", "feed", "age_week"]
-#     X = df[features].astype(float)
-#     results = {}
-
-#     payload = {
-#         "model_version": f"prior-{int(time.time())}",
-#         "algorithm": "ridge+tree_hinge",
-#         "metrics": []
-#     }
-
-#     # 模型1：日增重（线性）
-#     y_dg = df["daily_gain"].astype(float)
-#     Xtr, Xte, ytr, yte = train_test_split(X, y_dg, test_size=test_size, random_state=random_state)
-#     lin = Ridge(alpha=1.0, random_state=random_state)
-#     lin.fit(Xtr, ytr)
-#     pred = lin.predict(Xte)
-#     mape = float(np.mean(np.abs((yte - pred) / np.clip(yte, 1e-6, None))) * 100)
-#     payload["metrics"].append({
-#         "target": "daily_gain",
-#         "mae": float(mean_absolute_error(yte, pred)),
-#         "mape": mape,
-#         # "r2": float(r2_score(yte, pred)),
-#         "n": int(len(yte))
-#     })
-#     payload["linear_daily_gain"] = lin
-#     payload["features"] = features
-
-#     # 模型2：成活率（树作为非线性/分段）
-#     y_sr = df["survival_rate"].astype(float)
-#     Xtr2, Xte2, ytr2, yte2 = train_test_split(X, y_sr, test_size=test_size, random_state=random_state)
-#     tree = DecisionTreeRegressor(max_depth=5, random_state=random_state)
-#     tree.fit(Xtr2, ytr2)
-#     pred2 = tree.predict(Xte2)
-#     mape2 = float(np.mean(np.abs((yte2 - pred2) / np.clip(yte2, 1e-6, None))) * 100)
-#     payload["metrics"].append({
-#         "target": "survival_rate",
-#         "mae": float(mean_absolute_error(yte2, pred2)),
-#         "mape": mape2,
-#         # "r2": float(r2_score(yte2, pred2)),
-#         "n": int(len(yte2))
-#     })
-#     payload["tree_survival"] = tree
-
-#     return payload
 
 
 def _global_importance_percent(model_payload: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
@@ -655,30 +612,6 @@ def _global_importance_percent(model_payload: Dict[str, Any]) -> Dict[str, Dict[
     return {"survival_rate": imp_sr, "daily_gain": imp_dg}
 
 
-# def _global_importance_percent(model_payload: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
-#     # 将线性模型系数绝对值聚合为 daily_gain 的重要性
-#     feats = model_payload.get("features", ["temperature", "humidity", "co2", "feed", "age_week"])
-#     imp_dg = {k: 0.0 for k in feats}
-#     lin = model_payload.get("linear_daily_gain")
-#     if lin is not None and hasattr(lin, "coef_"):
-#         coefs = np.abs(lin.coef_)
-#         if coefs.sum() > 0:
-#             perc = 100.0 * coefs / coefs.sum()
-#             for i, f in enumerate(feats):
-#                 imp_dg[f] = float(perc[i])
-
-#     # 成活率重要性：用树的 feature_importances_
-#     imp_sr = {k: 0.0 for k in feats}
-#     tree = model_payload.get("tree_survival")
-#     if tree is not None and hasattr(tree, "feature_importances_"):
-#         imps = tree.feature_importances_
-#         if imps.sum() > 0:
-#             perc = 100.0 * imps / imps.sum()
-#             for i, f in enumerate(feats):
-#                 imp_sr[f] = float(perc[i])
-
-    # return {"survival_rate": imp_sr, "daily_gain": imp_dg}
-
 
 def _extract_raw_scale_coefs(lin_pipeline, feat_names: List[str]) -> np.ndarray:
     """
@@ -712,6 +645,108 @@ def _extract_raw_scale_coefs(lin_pipeline, feat_names: List[str]) -> np.ndarray:
     return np.zeros(len(feat_names), dtype=float)
 
 
+
+def _poly_raw_coefs_and_names(lin_pipeline, base_feat_names: List[str]) -> Tuple[np.ndarray, List[str]]:
+    """
+    从 make_pipeline(PolynomialFeatures(deg=2), StandardScaler, Ridge) 提取：
+    - raw_coefs: 还原到原始量纲后的系数（对应工程后的每一列）
+    - names: 与 raw_coefs 对齐的多项式特征名（如 'temperature', 'temperature^2', 'temperature humidity' 等）
+    """
+    if not hasattr(lin_pipeline, "named_steps"):
+        # 兼容：如果传进来的不是 pipeline，而是单模型，就返回其 coef_
+        if hasattr(lin_pipeline, "coef_"):
+            return np.asarray(lin_pipeline.coef_, dtype=float), list(base_feat_names)
+        return np.zeros(len(base_feat_names), dtype=float), list(base_feat_names)
+
+    steps = lin_pipeline.named_steps
+    # 找子模块（名称大小写容错）
+    poly = None
+    scaler = None
+    ridge = None
+    for k, v in steps.items():
+        kl = k.lower()
+        if "poly" in kl:
+            poly = v
+        elif "scaler" in kl:
+            scaler = v
+        elif "ridge" in kl:
+            ridge = v
+
+    if poly is None or scaler is None or ridge is None or not hasattr(ridge, "coef_"):
+        return np.zeros(len(base_feat_names), dtype=float), list(base_feat_names)
+
+    # 工程特征名（与 ridge.coef_ 对齐）
+    names = list(poly.get_feature_names_out(base_feat_names))
+    w_std = np.asarray(ridge.coef_, dtype=float)
+
+    # 把系数从标准化空间还原到原始量纲： w_raw = w_std / scale
+    scale = np.asarray(getattr(scaler, "scale_", np.ones_like(w_std)), dtype=float)
+    scale = np.where(scale == 0, 1.0, scale)
+    w_raw = w_std / scale
+    return w_raw, names
+
+
+def _u_shape_report_for_pipeline(lin_pipeline, base_feat_names: List[str], tau: float = 1e-6):
+    """
+    返回每个基础特征的曲率判定和转折点估计：
+    [
+      {"feature":"temperature","quad_coef":a,"lin_coef":b,"shape":"U/∩/near-linear","turning_point":x* or None},
+      ...
+    ]
+    """
+    coefs, names = _poly_raw_coefs_and_names(lin_pipeline, base_feat_names)
+    name_to_idx = {n: i for i, n in enumerate(names)}
+
+    # 多项式特征名的生成规则（sklearn）：
+    # - 一次项：   f
+    # - 平方项：   f^2
+    # - 交互项：   f g
+    out = []
+    for f in base_feat_names:
+        # 取一次项和平方项位置
+        idx_lin = name_to_idx.get(f, None)
+        idx_quad = name_to_idx.get(f + "^2", None)
+
+        b = float(coefs[idx_lin]) if idx_lin is not None else 0.0
+        a = float(coefs[idx_quad]) if idx_quad is not None else 0.0
+
+        if a > tau:
+            shape = "U"
+        elif a < -tau:
+            shape = "∩"
+        else:
+            shape = "near-linear"
+
+        turning_point = None
+        if abs(a) > tau:
+            turning_point = -b / (2.0 * a)
+
+        out.append({
+            "feature": f,
+            "lin_coef": round(b, 6),
+            "quad_coef": round(a, 6),
+            "shape": shape,
+            "turning_point": None if turning_point is None else round(float(turning_point), 6),
+            "note": "1D approx; ignores cross terms"
+        })
+    return out
+
+
+def u_shape_summary(model_payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    返回两个目标各自的 U/∩ 形判定表：
+    {
+      "daily_gain": [...],
+      "survival_rate": [...],
+    }
+    """
+    feats = model_payload.get("features", ["temperature", "humidity", "co2", "feed", "age_week"])
+    rep_dg = _u_shape_report_for_pipeline(model_payload.get("linear_daily_gain"), feats)
+    rep_sr = _u_shape_report_for_pipeline(model_payload.get("linear_survival"), feats)
+    return {"daily_gain": rep_dg, "survival_rate": rep_sr}
+
+
+
 def _local_slopes(env: Dict[str, float], model_payload: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
     """
     使用 PolynomialFeatures(2) + Ridge 的前5个线性项系数作为局部边际近似。
@@ -743,24 +778,6 @@ def _local_slopes(env: Dict[str, float], model_payload: Dict[str, Any]) -> Dict[
     return res
 
 
-
-
-# def _local_slopes(env: Dict[str, float], model_payload: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
-#     # 简单用线性系数近似边际：unit step 定义
-#     unit = {"temperature": 1.0, "humidity": 1.0, "co2": 100.0, "feed": 0.1, "age_week": 1.0}
-#     feats = model_payload.get("features", ["temperature", "humidity", "co2", "feed", "age_week"])
-#     lin = model_payload.get("linear_daily_gain")
-#     res = {}
-#     for i, f in enumerate(feats):
-#         dg_delta = 0.0
-#         if lin is not None and hasattr(lin, "coef_"):
-#             dg_delta = float(lin.coef_[i] * unit[f])
-#         # 成活率用树模型无法直接给斜率，给一个近似系数（缩放）
-#         sr_delta = dg_delta * 0.35
-#         res[f] = {"unit_step": unit[f], "delta_survival_rate": round(sr_delta, 3), "delta_daily_gain": round(dg_delta, 3)}
-#     return res
-
-
 def _predict_pair(row: Dict[str, Any], model_payload: Dict[str, Any]) -> Tuple[float, float]:
     """
     返回 (survival_rate, daily_gain)
@@ -780,17 +797,6 @@ def _predict_pair(row: Dict[str, Any], model_payload: Dict[str, Any]) -> Tuple[f
     return sr, dg
 
 
-# def _predict_pair(row: Dict[str, float], model_payload: Dict[str, Any]) -> Tuple[float, float]:
-#     feats = model_payload.get("features", ["temperature", "humidity", "co2", "feed", "age_week"])
-#     X = np.array([[row.get(f, 0.0) for f in feats]], dtype=float)
-#     sr, dg = 95.0, 100.0
-#     lin = model_payload.get("linear_daily_gain")
-#     if lin is not None:
-#         dg = float(lin.predict(X)[0])
-#     tree = model_payload.get("tree_survival")
-#     if tree is not None:
-#         sr = float(tree.predict(X)[0])
-#     return sr, dg
 
 # -----------------------------
 # Advice / anomalies helpers
@@ -1261,6 +1267,17 @@ def predict(payload: PredictBody):
         "explain": {
             "global_importance_percent": global_imp,
             "local_slopes_per_unit": slopes,
+            "u_or_inverted_u": u_shape_summary(m),   # ← 新增：各特征是否 U/∩，及转折点
+            "poly_coefs_snapshot": {                       # ← 新增：多项式系数快照（可用于追溯）
+                "daily_gain": {
+                    "feature_names": names_dg,             # 如 ["temperature","humidity",...,"temperature^2","temperature humidity",...]
+                    "coefs_raw_scale": [float(x) for x in coefs_dg]
+                },
+                "survival_rate": {
+                    "feature_names": names_sr,
+                    "coefs_raw_scale": [float(x) for x in coefs_sr]
+                }
+            },
             "generated_rules": gen_rules,
             "anomalies": anomalies
         },
