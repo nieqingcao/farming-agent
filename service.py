@@ -573,10 +573,12 @@ def _train_internal(df: pd.DataFrame, test_size=0.2, random_state=42) -> Dict[st
     lin = Ridge(alpha=1.0, random_state=random_state)
     lin.fit(Xtr, ytr)
     pred = lin.predict(Xte)
+    mape = float(np.mean(np.abs((yte - pred) / np.clip(yte, 1e-6, None))) * 100)
     payload["metrics"].append({
         "target": "daily_gain",
         "mae": float(mean_absolute_error(yte, pred)),
-        "r2": float(r2_score(yte, pred)),
+        "mape": mape,
+        # "r2": float(r2_score(yte, pred)),
         "n": int(len(yte))
     })
     payload["linear_daily_gain"] = lin
@@ -588,10 +590,12 @@ def _train_internal(df: pd.DataFrame, test_size=0.2, random_state=42) -> Dict[st
     tree = DecisionTreeRegressor(max_depth=5, random_state=random_state)
     tree.fit(Xtr2, ytr2)
     pred2 = tree.predict(Xte2)
+    mape2 = float(np.mean(np.abs((yte2 - pred2) / np.clip(yte2, 1e-6, None))) * 100)
     payload["metrics"].append({
         "target": "survival_rate",
         "mae": float(mean_absolute_error(yte2, pred2)),
-        "r2": float(r2_score(yte2, pred2)),
+        "mape": mape2,
+        # "r2": float(r2_score(yte2, pred2)),
         "n": int(len(yte2))
     })
     payload["tree_survival"] = tree
