@@ -14,7 +14,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, conint, confloat
 from sklearn.linear_model import Ridge
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 from sklearn.pipeline import make_pipeline
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.model_selection import train_test_split
@@ -515,62 +515,19 @@ def _save_model(payload: Dict[str, Any]) -> None:
 def _maybe_load_csv(path: str) -> pd.DataFrame:
     if os.path.exists(path):
         return pd.read_csv(path)
-    # # 兜底：若缺 CSV，合成一份简单数据（避免训练时报错）
-    # rng = np.random.default_rng(42)
-    # n = 2000
-    # temperature = rng.normal(22, 4, n).clip(10, 35)
-    # humidity = rng.normal(55, 8, n).clip(30, 80)
-    # co2 = rng.normal(900, 250, n).clip(400, 3000)
-    # feed = rng.normal(1.1, 0.3, n).clip(0.3, 2.5)
-    # age_week = rng.integers(0, 12, n)
-
-    # # 合成目标（仅作演示）
-    # daily_gain = (
-    #     130
-    #     - 3.5 * np.maximum(0, temperature - 25)
-    #     - 2.0 * np.maximum(0, 18 - temperature)
-    #     - 0.011 * (co2 - 800)
-    #     - 0.6 * np.maximum(0, humidity - 60)
-    #     + 18.0 * (feed - 1.0)
-    #     + 1.1 * age_week
-    #     + rng.normal(0, 3, n)
-    # )
-    # survival_rate = (
-    #     97.5
-    #     - 0.8 * np.maximum(0, temperature - 25)
-    #     - 0.5 * np.maximum(0, 18 - temperature)
-    #     - 0.0025 * (co2 - 900)
-    #     - 0.12 * np.maximum(0, humidity - 60)
-    #     + 0.05 * (feed - 1.0) * 100
-    #     + 0.05 * age_week
-    #     + rng.normal(0, 0.6, n)
-    # ).clip(70, 100)
-
-    # df = pd.DataFrame({
-    #     "temperature": temperature,
-    #     "humidity": humidity,
-    #     "co2": co2,
-    #     "feed": feed,
-    #     "age_week": age_week,
-    #     "daily_gain": daily_gain,
-    #     "survival_rate": survival_rate,
-    # })
-    # os.makedirs(os.path.dirname(path), exist_ok=True)
-    # df.to_csv(path, index=False)
-    # return df
 
 def _train_internal(df: pd.DataFrame, test_size=0.2, random_state=42) -> Dict[str, Any]:
     """
     训练四个模型：
-    - daily_gain：决策树(tree_daily_gain) 负责数值预测 + 重要性；Ridge(linear_daily_gain) 负责局部边际
-    - survival_rate：决策树(tree_survival) 负责数值预测 + 重要性；Ridge(linear_survival) 负责局部边际
+    - daily_gain：决策树(tree_daily_gain) 负责数值预测 + 重要性；PolynomialFeatures(degree=2) + StandardScaler + Ridge 负责局部边际
+    - survival_rate：决策树(tree_survival) 负责数值预测 + 重要性；PolynomialFeatures(degree=2) + StandardScaler + Ridge 负责局部边际
     """
     features = ["temperature", "humidity", "co2", "feed", "age_week"]
     X = df[features].astype(float)
 
     payload = {
         "model_version": f"prior-{int(time.time())}",
-        "algorithm": "tree+ridge_explain",
+        "algorithm": "tree + ridge(Polynomial deg=2, StandardScaler)",
         "features": features,
         "metrics": []
     }
@@ -585,8 +542,7 @@ def _train_internal(df: pd.DataFrame, test_size=0.2, random_state=42) -> Dict[st
     y_dg = df["daily_gain"].astype(float)
     Xtr, Xte, ytr, yte = train_test_split(X, y_dg, test_size=test_size, random_state=random_state)
     tree_dg = DecisionTreeRegressor(max_depth=5, random_state=random_state).fit(Xtr, ytr)
-    lin_dg  = make_pipeline(StandardScaler(), Ridge(alpha=1.0, random_state=random_state)).fit(Xtr, ytr)
-    # lin_dg  = Ridge(alpha=1.0, random_state=random_state).fit(Xtr, ytr)
+    lin_dg  = make_pipeline(PolynomialFeatures(degree=2, include_bias=False), StandardScaler(), Ridge(alpha=1.0, random_state=random_state)).fit(Xtr, ytr)
     pred_dg = tree_dg.predict(Xte)
     payload["metrics"].append({
         "target": "daily_gain",
@@ -603,8 +559,7 @@ def _train_internal(df: pd.DataFrame, test_size=0.2, random_state=42) -> Dict[st
     y_sr = df["survival_rate"].astype(float)
     Xtr2, Xte2, ytr2, yte2 = train_test_split(X, y_sr, test_size=test_size, random_state=random_state)
     tree_sr = DecisionTreeRegressor(max_depth=5, random_state=random_state).fit(Xtr2, ytr2)
-    lin_sr  = make_pipeline(StandardScaler(), Ridge(alpha=1.0, random_state=random_state)).fit(Xtr2, ytr2)
-    # lin_sr  = Ridge(alpha=1.0, random_state=random_state).fit(Xtr2, ytr2)
+    lin_sr  = make_pipeline(PolynomialFeatures(degree=2, include_bias=False), StandardScaler(), Ridge(alpha=1.0, random_state=random_state)).fit(Xtr2, ytr2)
     pred_sr = tree_sr.predict(Xte2)
     payload["metrics"].append({
         "target": "survival_rate",
@@ -759,9 +714,8 @@ def _extract_raw_scale_coefs(lin_pipeline, feat_names: List[str]) -> np.ndarray:
 
 def _local_slopes(env: Dict[str, float], model_payload: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
     """
-    使用两条 Ridge(带标准化) 的“原始量纲系数”为单位增量给出边际：
-    - delta_daily_gain: linear_daily_gain 的原始量纲系数 * unit
-    - delta_survival_rate: linear_survival 的原始量纲系数 * unit
+    使用 PolynomialFeatures(2) + Ridge 的前5个线性项系数作为局部边际近似。
+    仍返回原始单位下的增量。
     """
     unit = {"temperature": 1.0, "humidity": 1.0, "co2": 100.0, "feed": 0.1, "age_week": 1.0}
     feats = model_payload.get("features", ["temperature", "humidity", "co2", "feed", "age_week"])
@@ -769,8 +723,12 @@ def _local_slopes(env: Dict[str, float], model_payload: Dict[str, Any]) -> Dict[
     lin_dg = model_payload.get("linear_daily_gain")
     lin_sr = model_payload.get("linear_survival")
 
-    coefs_dg = _extract_raw_scale_coefs(lin_dg, feats) if lin_dg is not None else np.zeros(len(feats))
-    coefs_sr = _extract_raw_scale_coefs(lin_sr, feats) if lin_sr is not None else np.zeros(len(feats))
+    coefs_dg = _extract_raw_scale_coefs(lin_dg, feats)
+    coefs_sr = _extract_raw_scale_coefs(lin_sr, feats)
+
+    # 取前5项（线性部分）
+    coefs_dg = np.asarray(coefs_dg[:len(feats)])
+    coefs_sr = np.asarray(coefs_sr[:len(feats)])
 
     res = {}
     for i, f in enumerate(feats):
@@ -780,9 +738,10 @@ def _local_slopes(env: Dict[str, float], model_payload: Dict[str, Any]) -> Dict[
             "unit_step": unit[f],
             "delta_daily_gain": round(dg_delta, 3),
             "delta_survival_rate": round(sr_delta, 3),
-            "source": "Ridge (on raw scale) with StandardScaler"
+            "source": "Polynomial Ridge (deg=2, on raw scale)"
         }
     return res
+
 
 
 
